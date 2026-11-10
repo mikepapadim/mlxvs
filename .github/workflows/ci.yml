@@ -26,7 +26,7 @@ jobs:
       - name: Format
         run: |
           brew install clang-format
-          clang-format --dry-run --Werror include/mlxvs/*.h src/*.cpp src/*.h tests/*.cpp bench/*.cpp python/*.cpp
+          clang-format --dry-run --Werror include/mlxvs/*.h src/*.cpp src/*.h tests/*.cpp tests/*.h bench/*.cpp python/*.cpp
 
   python:
     name: Python (macOS 15, Apple silicon)

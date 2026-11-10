@@ -144,3 +144,61 @@ def test_nn_descent_rejects_bad_input():
         mlxvs.nn_descent(mx.zeros((1, 4)), 8)
     with pytest.raises(ValueError):
         mlxvs.nn_descent(mx.zeros((10,)), 8)
+
+
+def blobs(n, d, clusters, seed):
+    rng = np.random.default_rng(seed)
+    centers = 6 * rng.standard_normal((clusters, d), dtype=np.float32)
+    return centers[np.arange(n) % clusters] + rng.standard_normal(
+        (n, d), dtype=np.float32
+    )
+
+
+@pytest.mark.parametrize(
+    "metric", [mlxvs.Metric.inner_product, mlxvs.Metric.l2, mlxvs.Metric.cosine]
+)
+@pytest.mark.parametrize(
+    "algo", [mlxvs.GraphBuild.brute_force, mlxvs.GraphBuild.nn_descent]
+)
+def test_all_neighbors_clusters(metric, algo):
+    x = blobs(16000, 64, 40, 13)
+    k = 32
+    ids, dist = mlxvs.all_neighbors(
+        mx.array(x), k, metric, algo=algo, n_clusters=4, overlap_factor=2
+    )
+    ids, dist = np.array(ids), np.array(dist)
+    assert ids.shape == (16000, k) and dist.shape == (16000, k)
+    assert (ids != np.arange(16000)[:, None]).all()  # never the row itself
+    assert (ids >= 0).all()
+    for r in range(0, 16000, 1000):  # distinct per row
+        assert len(set(ids[r].tolist())) == k
+    step = np.diff(dist, axis=1)  # nearest first
+    assert (step >= -1e-5).all() if metric == mlxvs.Metric.l2 else (step <= 1e-5).all()
+    sample = np.arange(0, 16000, 160)  # 100 rows: exact() broadcasts [100, n, d]
+    scores = exact(metric, x[sample], x)
+    scores[np.arange(len(sample)), sample] = -np.inf  # self excluded
+    assert recall(ids[sample], scores, k) > 0.95
+
+
+def test_all_neighbors_one_cluster_brute_force_is_exact():
+    x = rows(2000, 16, 14)
+    k = 10
+    ids, _ = mlxvs.all_neighbors(
+        mx.array(x), k, mlxvs.Metric.l2, algo=mlxvs.GraphBuild.brute_force
+    )
+    scores = exact(mlxvs.Metric.l2, x, x)
+    np.fill_diagonal(scores, -np.inf)
+    assert recall(np.array(ids), scores, k) > 0.999
+
+
+def test_all_neighbors_small_n_and_bad_input():
+    ids, _ = mlxvs.all_neighbors(mx.array(rows(5, 4, 1)), 8, mlxvs.Metric.l2)
+    ids = np.array(ids)
+    assert (ids[:, :4] >= 0).all() and (ids[:, 4:] == -1).all()
+    with pytest.raises(ValueError):
+        mlxvs.all_neighbors(mx.zeros((10, 4)), 200)
+    with pytest.raises(ValueError):
+        mlxvs.all_neighbors(mx.zeros((10, 4)), 4, n_clusters=11)
+    with pytest.raises(ValueError):
+        mlxvs.all_neighbors(mx.zeros((10, 4)), 4, n_clusters=2, overlap_factor=3)
+

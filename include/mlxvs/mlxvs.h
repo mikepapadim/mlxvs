@@ -133,6 +133,61 @@ MLXVS_API Neighbors nn_descent(
     const NnDescentOptions& options = {},
     mx::StreamOrDevice s = {});
 
+/** How all_neighbors builds the k-NN graph of each cluster. */
+enum class GraphBuild {
+  /** Exact: brute_force_knn of the cluster against itself. */
+  BruteForce,
+  /** Approximate: nn_descent. */
+  NnDescent,
+};
+
+/** Options of all_neighbors, named after cuVS's all_neighbors::index_params. */
+struct AllNeighborsOptions {
+  GraphBuild algo = GraphBuild::NnDescent;
+
+  /**
+   * k-means clusters the rows are split into; 1 builds the graph of all rows at
+   * once (no clustering).
+   */
+  int n_clusters = 1;
+
+  /**
+   * Clusters each row joins (its nearest centroids), so that neighbors across a
+   * cluster boundary are found. Ignored when n_clusters is 1.
+   */
+  int overlap_factor = 2;
+
+  /**
+   * Clusters of at most this many rows are built exactly (brute force) even
+   * with algo NnDescent: as fast, and exact.
+   */
+  int brute_force_below = 4096;
+
+  KMeansOptions kmeans;
+  NnDescentOptions nn_descent;
+  KnnOptions brute_force;
+};
+
+/**
+ * k-nearest-neighbor graph of rows [n, d] float32: the k nearest other
+ * rows of every row, nearest first, with the ids and distances of
+ * brute_force_knn.
+ *
+ * With n_clusters > 1 the rows are clustered by k-means (on unit rows for
+ * Cosine), each row joins its overlap_factor nearest clusters, the graph of
+ * every cluster is built on its own (exact or NN-Descent), and each row's lists
+ * from its clusters are merged (duplicates removed). Only one cluster's rows
+ * and working set are on the GPU at a time, so this builds graphs of datasets
+ * whose NN-Descent state does not fit at once. Requires 1 <= k <= 128 with
+ * NnDescent (255 with BruteForce) and n >= 2. Runs on the GPU.
+ */
+MLXVS_API Neighbors all_neighbors(
+    const mx::array& rows,
+    int k,
+    Metric metric,
+    const AllNeighborsOptions& options = {},
+    mx::StreamOrDevice s = {});
+
 /**
  * One merge step of brute_force_knn, exposed for tests and benchmarks: the best
  * k of each row of scores [nq, t] (ids id_offset + column) together with the

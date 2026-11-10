@@ -3,7 +3,9 @@
 """GPU k-NN search and k-NN graph construction on Apple silicon, on MLX."""
 
 from mlxvs._core import (
+    GraphBuild,
     Metric,
+    all_neighbors,
     brute_force_knn,
     kmeans_fit,
     kmeans_predict,
@@ -11,7 +13,9 @@ from mlxvs._core import (
 )
 
 __all__ = [
+    "GraphBuild",
     "Metric",
+    "all_neighbors",
     "brute_force_knn",
     "kmeans_fit",
     "kmeans_predict",

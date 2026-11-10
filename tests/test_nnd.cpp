@@ -3,87 +3,13 @@
 //
 // NN-Descent against the exact k-NN graph (brute_force_knn, self excluded) on
 // Gaussian and clustered data.
-#include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
-#include <random>
 #include <unordered_set>
 #include <vector>
 
-#include "mlxvs/mlxvs.h"
-
-namespace mx = mlx::core;
-using mlxvs::Metric;
-
-static int failures = 0;
-
-static void check(bool ok, const char* what) {
-  if (!ok) {
-    ++failures;
-    std::printf("FAIL %s\n", what);
-  }
-}
-
-static const char* metric_name(Metric m) {
-  switch (m) {
-    case Metric::InnerProduct:
-      return "inner";
-    case Metric::Cosine:
-      return "cosine";
-    case Metric::L2:
-      return "l2";
-  }
-  return "?";
-}
-
-static std::vector<float> gaussian(int n, int d, unsigned seed) {
-  std::mt19937 rng(seed);
-  std::normal_distribution<float> g;
-  std::vector<float> v((size_t)n * d);
-  for (auto& x : v)
-    x = g(rng);
-  return v;
-}
-
-// `clusters` Gaussian blobs (centers N(0, 4^2), points N(center, 1)) of random
-// sizes
-static std::vector<float> clustered(int n, int d, int clusters, unsigned seed) {
-  std::mt19937 rng(seed);
-  std::normal_distribution<float> g;
-  std::vector<float> centers((size_t)clusters * d);
-  for (auto& c : centers)
-    c = 4.0f * g(rng);
-  std::uniform_int_distribution<int> pick(0, clusters - 1);
-  std::vector<float> v((size_t)n * d);
-  for (int i = 0; i < n; ++i) {
-    int c = pick(rng);
-    for (int j = 0; j < d; ++j)
-      v[(size_t)i * d + j] = centers[(size_t)c * d + j] + g(rng);
-  }
-  return v;
-}
-
-static double exact_distance(Metric m, const float* a, const float* b, int d) {
-  double dot = 0, aa = 0, bb = 0, l2 = 0;
-  for (int i = 0; i < d; ++i) {
-    dot += (double)a[i] * b[i];
-    aa += (double)a[i] * a[i];
-    bb += (double)b[i] * b[i];
-    l2 += ((double)a[i] - b[i]) * ((double)a[i] - b[i]);
-  }
-  switch (m) {
-    case Metric::InnerProduct:
-      return dot;
-    case Metric::Cosine:
-      return dot / std::sqrt(aa * bb);
-    case Metric::L2:
-      return l2;
-  }
-  return 0;
-}
+#include "common.h"
 
 // recall@k and recall@10 of nn_descent against the exact graph, and the
 // structure of the result: ids in range, distinct, never the row itself,
@@ -98,10 +24,7 @@ static void nnd_case(
     bool fp16,
     double min_recall) {
   mx::array x(host.data(), {n, d}, mx::float32);
-  // exact: k + 1 neighbors, the row itself dropped (for inner product a row
-  // need not be its own nearest)
-  auto exact = mlxvs::brute_force_knn(x, x, k + 1, m);
-  mx::eval(exact.ids, exact.distances);
+  auto exact = exact_graph(x, k, m);
   std::vector<long long> updates;
   mlxvs::NnDescentOptions options;
   options.fp16 = fp16;
@@ -112,65 +35,12 @@ static void nnd_case(
   double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
           .count();
-  const int* eid = exact.ids.data<int>();
-  const int* aid = approx.ids.data<int>();
-  const float* adist = approx.distances.data<float>();
-  int r10 = std::min(10, k);
-  long hit_k = 0, hit_10 = 0, empty = 0;
-  bool valid = true, distinct = true, no_self = true, sorted = true;
-  double max_err = 0;
-  // an entry counts when its distance is at least as close as the exact k-th
-  // (10th) one, so that ties (frequent with integer data such as SIFT) are not
-  // misses, as JVector's MetalSmoke counts
-  const float* edist = exact.distances.data<float>();
-  auto closer = [m](float a, float b) {
-    float tol = 1e-5f * std::max(1.0f, std::abs(b));
-    return m == Metric::L2 ? a <= b + tol : a >= b - tol;
-  };
-  std::vector<float> truth;
-  for (int i = 0; i < n; ++i) {
-    truth.clear();
-    for (int j = 0; j <= k && (int)truth.size() < k; ++j) {
-      if (eid[(size_t)i * (k + 1) + j] != i)
-        truth.push_back(edist[(size_t)i * (k + 1) + j]);
-    }
-    float kth = truth[k - 1];
-    float tenth = truth[r10 - 1];
-    std::unordered_set<int> seen;
-    const int* row = aid + (size_t)i * k;
-    const float* dist = adist + (size_t)i * k;
-    for (int j = 0; j < k; ++j) {
-      int id = row[j];
-      if (id < 0) {
-        ++empty;
-        continue;
-      }
-      valid &= id < n;
-      no_self &= id != i;
-      distinct &= seen.insert(id).second;
-      hit_k += closer(dist[j], kth);
-      if (j < r10)
-        hit_10 += closer(dist[j], tenth);
-      if (j > 0 && row[j - 1] >= 0) {
-        sorted &=
-            m == Metric::L2 ? dist[j - 1] <= dist[j] : dist[j - 1] >= dist[j];
-      }
-      if (i % 97 == 0 && id < n) {
-        double e =
-            exact_distance(m, &host[(size_t)i * d], &host[(size_t)id * d], d);
-        max_err = std::max(
-            max_err, std::abs(e - dist[j]) / std::max(1.0, std::abs(e)));
-      }
-    }
-  }
-  double recall_k = hit_k / (double)((long)n * k);
-  double recall_10 = hit_10 / (double)((long)n * r10);
+  auto q = score_graph(host, n, d, k, m, approx, exact);
   int rounds = (int)updates.size();
-  bool ok = recall_k >= min_recall && valid && distinct && no_self && sorted &&
-      empty == 0 && max_err < 1e-4;
+  bool ok = q.recall_k >= min_recall && q.structure();
   std::printf(
       "%-6s nnd %-9s %-6s %s n=%d d=%d k=%d: recall@k %.4f, recall@10 %.4f, rounds %d (4 start), last updates %lld, "
-      "%.2f s%s%s%s%s%s\n",
+      "%.2f s",
       ok ? "PASS" : "FAIL",
       data_name,
       metric_name(m),
@@ -178,46 +48,15 @@ static void nnd_case(
       n,
       d,
       k,
-      recall_k,
-      recall_10,
+      q.recall_k,
+      q.recall_10,
       rounds,
       updates.empty() ? 0LL : updates.back(),
-      seconds,
-      valid ? "" : ", INVALID ids",
-      distinct ? "" : ", DUPLICATE ids",
-      no_self ? "" : ", SELF in list",
-      sorted ? "" : ", NOT sorted",
-      empty == 0 ? "" : ", EMPTY entries");
-  if (max_err >= 1e-4)
-    std::printf("       max relative distance error %.2e\n", max_err);
-  check(recall_k >= min_recall, "nnd recall@k");
-  check(valid && distinct && no_self, "nnd ids");
-  check(sorted, "nnd order");
-  check(empty == 0, "nnd filled");
-  check(max_err < 1e-4, "nnd distances");
-}
-
-// the rows of an .fvecs file (each row: int32 dim, then dim floats); empty if
-// it cannot be read
-static std::vector<float> read_fvecs(const char* path, int& n, int& d) {
-  std::ifstream in(path, std::ios::binary);
-  std::vector<float> v;
-  n = 0;
-  d = 0;
-  int dim;
-  while (in.read(reinterpret_cast<char*>(&dim), 4)) {
-    if (d == 0)
-      d = dim;
-    if (dim != d)
-      return {};
-    size_t at = v.size();
-    v.resize(at + d);
-    if (!in.read(
-            reinterpret_cast<char*>(v.data() + at), (std::streamsize)d * 4))
-      return {};
-    ++n;
-  }
-  return v;
+      seconds);
+  q.print_flags();
+  std::printf("\n");
+  check(q.recall_k >= min_recall, "nnd recall@k");
+  q.check_structure("nnd");
 }
 
 // fewer rows than k + 1: every other row is listed, the rest is -1 padding

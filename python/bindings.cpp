@@ -19,6 +19,11 @@ NB_MODULE(_core, m) {
       .value("l2", mlxvs::Metric::L2)
       .value("cosine", mlxvs::Metric::Cosine);
 
+  nb::enum_<mlxvs::GraphBuild>(
+      m, "GraphBuild", "How all_neighbors builds each cluster's graph.")
+      .value("brute_force", mlxvs::GraphBuild::BruteForce)
+      .value("nn_descent", mlxvs::GraphBuild::NnDescent);
+
   m.def(
       "brute_force_knn",
       [](const mx::array& base,
@@ -169,6 +174,78 @@ NB_MODULE(_core, m) {
               way.
             seed (int): Random seed. Results still vary slightly between
               runs: concurrent writes to hashed slots race.
+            stream (Stream, optional): Stream or device. GPU only.
+
+        Returns:
+            tuple(array, array): ids ``int32 [n, k]`` (-1 where fewer were
+            found) and distances ``float32 [n, k]``, as ``brute_force_knn``.
+      )");
+
+  m.def(
+      "all_neighbors",
+      [](const mx::array& rows,
+         int k,
+         mlxvs::Metric metric,
+         mlxvs::GraphBuild algo,
+         int n_clusters,
+         int overlap_factor,
+         int brute_force_below,
+         int max_iterations,
+         double termination_threshold,
+         bool fp16,
+         unsigned long long seed,
+         mx::StreamOrDevice s) {
+        mlxvs::AllNeighborsOptions options;
+        options.algo = algo;
+        options.n_clusters = n_clusters;
+        options.overlap_factor = overlap_factor;
+        options.brute_force_below = brute_force_below;
+        options.kmeans.seed = seed;
+        options.nn_descent.max_iterations = max_iterations;
+        options.nn_descent.termination_threshold = termination_threshold;
+        options.nn_descent.fp16 = fp16;
+        options.nn_descent.seed = seed;
+        auto r = mlxvs::all_neighbors(rows, k, metric, options, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "rows"_a,
+      "k"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "algo"_a = mlxvs::GraphBuild::NnDescent,
+      "n_clusters"_a = 1,
+      "overlap_factor"_a = 2,
+      "brute_force_below"_a = 4096,
+      "max_iterations"_a = 24,
+      "termination_threshold"_a = 0.0001,
+      "fp16"_a = true,
+      "seed"_a = 42,
+      "stream"_a = nb::none(),
+      R"(
+        k-nearest-neighbor graph of the rows, in overlapping k-means clusters.
+
+        As cuVS's ``all_neighbors.build``: with ``n_clusters > 1`` the rows
+        are clustered by k-means (unit rows for ``cosine``), every row joins
+        its ``overlap_factor`` nearest clusters, each cluster's graph is built
+        on its own, and every row keeps the best ``k`` of the lists its
+        clusters gave it. One cluster is on the GPU at a time.
+
+        Args:
+            rows (array): Rows, float32 ``[n, d]``, ``n >= 2``.
+            k (int): Neighbors per row, at most 128 with ``nn_descent`` (255
+              with ``brute_force``).
+            metric (Metric): ``inner_product``, ``l2`` (squared) or ``cosine``.
+            algo (GraphBuild): ``nn_descent`` (approximate) or
+              ``brute_force`` (exact) for each cluster.
+            n_clusters (int): k-means clusters; 1 builds all rows at once.
+            overlap_factor (int): Clusters each row joins.
+            brute_force_below (int): Clusters of at most this many rows are
+              built exactly whatever ``algo``.
+            max_iterations (int): NN-Descent rounds after the random start.
+            termination_threshold (float): NN-Descent stops after a round
+              that replaced fewer than this fraction of the list entries.
+            fp16 (bool): NN-Descent joins from float16 rows.
+            seed (int): Random seed of k-means and NN-Descent.
             stream (Stream, optional): Stream or device. GPU only.
 
         Returns:
