@@ -1,0 +1,16 @@
+# As ml-explore/mlx: clang-format with MLX's .clang-format, cmake-format, ruff
+# for the Python bindings to come.
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+    - id: check-yaml
+- repo: https://github.com/pre-commit/mirrors-clang-format
+  rev: v21.1.8
+  hooks:
+    - id: clang-format
+      files: \.(h|cpp)$
+- repo: https://github.com/cheshirekow/cmake-format-precommit
+  rev: v0.6.13
+  hooks:
+    - id: cmake-format

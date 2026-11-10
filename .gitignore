@@ -1,0 +1,6 @@
+build/
+.cache/
+*.metallib
+__pycache__/
+*.egg-info/
+.DS_Store

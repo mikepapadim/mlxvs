@@ -1,0 +1,13 @@
+mlxvs
+Copyright 2026 mikepapadim
+
+Licensed under the Apache License, Version 2.0.
+
+The NN-Descent kernels (src/nnd_kernels.h, src/nndescent.cpp) are a port to
+MLX of the Metal NN-Descent in JVector's jvector-gpu module
+(https://github.com/datastax/jvector, Apache License 2.0, Copyright DataStax,
+Inc.), from which the algorithm's structure, parameters and kernel design are
+taken: random start over permutation blocks, 16 samples per node, 64-member
+joins scored with SIMD-group matrices, hashed proposal slots and the bitonic
+merge. The prune-side top-k selection in src/kernels.h follows the same
+module's exact k-NN selection.
