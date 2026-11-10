@@ -25,14 +25,12 @@ mx::array squared_distances(const mx::array& x, const mx::array& c) {
 } // namespace
 
 mx::array kmeans_fit(
-    const mx::array& x,
+    const mx::array& x_in,
     int clusters,
     const KMeansOptions& options,
     mx::StreamOrDevice s) {
   mx::StreamContext context(detail::gpu_stream(s, "mlxvs::kmeans_fit"));
-  if (x.ndim() != 2 || x.dtype() != mx::float32) {
-    throw std::invalid_argument("[mlxvs::kmeans_fit] float32 [n, d] expected");
-  }
+  auto x = detail::float_rows(x_in, "mlxvs::kmeans_fit", "x");
   int n = x.shape(0);
   int d = x.shape(1);
   if (clusters < 1 || clusters > n) {
@@ -136,12 +134,20 @@ mx::array kmeans_fit(
 }
 
 mx::array kmeans_predict(
-    const mx::array& x,
-    const mx::array& centroids,
+    const mx::array& x_in,
+    const mx::array& centroids_in,
     int m,
     int tile_rows,
     mx::StreamOrDevice s) {
   mx::StreamContext context(detail::gpu_stream(s, "mlxvs::kmeans_predict"));
+  auto x = detail::float_rows(x_in, "mlxvs::kmeans_predict", "x");
+  auto centroids =
+      detail::float_rows(centroids_in, "mlxvs::kmeans_predict", "centroids");
+  if (x.shape(1) != centroids.shape(1)) {
+    throw std::invalid_argument(
+        "[mlxvs::kmeans_predict] x and centroids must have the same number of "
+        "columns.");
+  }
   int n = x.shape(0);
   int d = x.shape(1);
   int c = centroids.shape(0);

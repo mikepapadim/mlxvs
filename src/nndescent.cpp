@@ -166,16 +166,13 @@ Neighbors rescore(const mx::array& x, const mx::array& ids, Metric metric) {
 } // namespace
 
 Neighbors nn_descent(
-    const mx::array& rows,
+    const mx::array& rows_in,
     int kq,
     Metric metric,
     const NnDescentOptions& options,
     mx::StreamOrDevice s) {
   mx::StreamContext context(detail::gpu_stream(s, "mlxvs::nn_descent"));
-  if (rows.ndim() != 2 || rows.dtype() != mx::float32) {
-    throw std::invalid_argument(
-        "[mlxvs::nn_descent] float32 rows [n, d] expected");
-  }
+  auto rows = detail::float_rows(rows_in, "mlxvs::nn_descent");
   int n = rows.shape(0);
   int d = rows.shape(1);
   int list = std::max(64, kq);

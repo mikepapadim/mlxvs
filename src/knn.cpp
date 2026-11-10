@@ -68,21 +68,20 @@ std::pair<mx::array, mx::array> topk_merge(
 }
 
 Neighbors brute_force_knn(
-    const mx::array& base,
-    const mx::array& queries,
+    const mx::array& base_in,
+    const mx::array& queries_in,
     int k,
     Metric metric,
     const KnnOptions& options,
     mx::StreamOrDevice s) {
   mx::StreamContext context(detail::gpu_stream(s, "mlxvs::brute_force_knn"));
-  if (base.ndim() != 2 || queries.ndim() != 2 ||
-      base.shape(1) != queries.shape(1)) {
+  auto base = detail::float_rows(base_in, "mlxvs::brute_force_knn", "base");
+  auto queries =
+      detail::float_rows(queries_in, "mlxvs::brute_force_knn", "queries");
+  if (base.shape(1) != queries.shape(1)) {
     throw std::invalid_argument(
-        "[mlxvs::brute_force_knn] base [n, d] and queries [nq, d] expected");
-  }
-  if (base.dtype() != mx::float32 || queries.dtype() != mx::float32) {
-    throw std::invalid_argument(
-        "[mlxvs::brute_force_knn] float32 rows expected");
+        "[mlxvs::brute_force_knn] base and queries must have the same number "
+        "of columns.");
   }
   int n = base.shape(0);
   int d = base.shape(1);

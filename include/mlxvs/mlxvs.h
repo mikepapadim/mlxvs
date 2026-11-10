@@ -47,9 +47,9 @@ struct KnnOptions {
 
 /**
  * Exact k-nearest neighbors of every row of queries [nq, d] among the rows of
- * base [n, d], both float32. Each tile of base rows is scored with a matrix
- * multiply and a fused radix-select kernel keeps the best k per query across
- * tiles. Requires 1 <= k <= 256. Runs on the GPU.
+ * base [n, d] (any real dtype, computed in float32). Each tile of base rows is
+ * scored with a matrix multiply and a fused radix-select kernel keeps the best
+ * k per query across tiles. Requires 1 <= k <= 256. Runs on the GPU.
  */
 MLXVS_API Neighbors brute_force_knn(
     const mx::array& base,
@@ -72,7 +72,8 @@ struct KMeansOptions {
 
 /**
  * Fits k-means (squared Euclidean, k-means++ start, Lloyd iterations) to a
- * random sample of x [n, d] float32. Returns the centroids [clusters, d].
+ * random sample of x [n, d] (any real dtype). Returns the centroids [clusters,
+ * d].
  */
 MLXVS_API mx::array kmeans_fit(
     const mx::array& x,
@@ -120,9 +121,9 @@ struct NnDescentOptions {
 };
 
 /**
- * Approximate k-nearest-neighbor graph of rows [n, d] float32 by NN-Descent:
- * the k nearest other rows of every row, nearest first, with the ids and
- * distances of brute_force_knn. Lists hold max(64, k) entries. Requires
+ * Approximate k-nearest-neighbor graph of rows [n, d] (any real dtype) by
+ * NN-Descent: the k nearest other rows of every row, nearest first, with the
+ * ids and distances of brute_force_knn. Lists hold max(64, k) entries. Requires
  * 1 <= k <= 128 and n >= 2. Not deterministic: concurrent writes to hashed
  * proposal slots decide which colliding entry survives. Runs on the GPU.
  */
@@ -169,7 +170,7 @@ struct AllNeighborsOptions {
 };
 
 /**
- * k-nearest-neighbor graph of rows [n, d] float32: the k nearest other
+ * k-nearest-neighbor graph of rows [n, d] (any real dtype): the k nearest other
  * rows of every row, nearest first, with the ids and distances of
  * brute_force_knn.
  *

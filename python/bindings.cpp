@@ -50,8 +50,8 @@ NB_MODULE(_core, m) {
         and a fused radix-select kernel keeps the best ``k`` per query.
 
         Args:
-            base (array): Base rows, float32 ``[n, d]``.
-            queries (array): Query rows, float32 ``[nq, d]``.
+            base (array): Base rows ``[n, d]``, any real dtype.
+            queries (array): Query rows ``[nq, d]``, any real dtype.
             k (int): Neighbors per query, at most 256.
             metric (Metric): ``inner_product``, ``l2`` (squared) or ``cosine``.
             tile_rows (int): Base rows scored per step.
@@ -87,7 +87,7 @@ NB_MODULE(_core, m) {
         k-means++ start, then ``max_iter`` Lloyd iterations.
 
         Args:
-            x (array): Rows, float32 ``[n, d]``.
+            x (array): Rows ``[n, d]``, any real dtype.
             clusters (int): Number of centroids.
             max_iter (int): Lloyd iterations.
             sample_rows (int): Rows sampled (at least 64 per cluster).
@@ -117,8 +117,8 @@ NB_MODULE(_core, m) {
         The ``m`` nearest centroids of every row, nearest first.
 
         Args:
-            x (array): Rows, float32 ``[n, d]``.
-            centroids (array): Centroids, float32 ``[c, d]``.
+            x (array): Rows ``[n, d]``, any real dtype.
+            centroids (array): Centroids ``[c, d]``, any real dtype.
             m (int): Centroids per row; more than 1 assigns rows to
               overlapping clusters, as batched all-neighbors does.
             tile_rows (int): Rows scored per step.
@@ -163,7 +163,7 @@ NB_MODULE(_core, m) {
         (``k`` is its ``graph_degree``).
 
         Args:
-            rows (array): Rows, float32 ``[n, d]``, ``n >= 2``.
+            rows (array): Rows ``[n, d]``, any real dtype, ``n >= 2``.
             k (int): Neighbors per row, at most 128.
             metric (Metric): ``inner_product``, ``l2`` (squared) or ``cosine``.
             max_iterations (int): Rounds after the random start, at most.
@@ -231,7 +231,7 @@ NB_MODULE(_core, m) {
         clusters gave it. One cluster is on the GPU at a time.
 
         Args:
-            rows (array): Rows, float32 ``[n, d]``, ``n >= 2``.
+            rows (array): Rows ``[n, d]``, any real dtype, ``n >= 2``.
             k (int): Neighbors per row, at most 128 with ``nn_descent`` (255
               with ``brute_force``).
             metric (Metric): ``inner_product``, ``l2`` (squared) or ``cosine``.

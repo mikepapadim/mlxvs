@@ -101,16 +101,13 @@ Neighbors cluster_graph(
 } // namespace
 
 Neighbors all_neighbors(
-    const mx::array& rows,
+    const mx::array& rows_in,
     int k,
     Metric metric,
     const AllNeighborsOptions& options,
     mx::StreamOrDevice s) {
   mx::StreamContext context(detail::gpu_stream(s, "mlxvs::all_neighbors"));
-  if (rows.ndim() != 2 || rows.dtype() != mx::float32) {
-    throw std::invalid_argument(
-        "[mlxvs::all_neighbors] float32 rows [n, d] expected");
-  }
+  auto rows = detail::float_rows(rows_in, "mlxvs::all_neighbors");
   int n = rows.shape(0);
   int d = rows.shape(1);
   int max_k = options.algo == GraphBuild::NnDescent ? 128 : 255;

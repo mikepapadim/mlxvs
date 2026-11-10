@@ -75,7 +75,7 @@ def test_brute_force_knn_rejects_bad_input():
     with pytest.raises(ValueError):
         mlxvs.brute_force_knn(mx.zeros((4, 3)), mx.zeros((2, 3)), 300)
     with pytest.raises(ValueError):
-        mlxvs.brute_force_knn(mx.zeros((4, 3), dtype=mx.float16), mx.zeros((2, 3)), 1)
+        mlxvs.brute_force_knn(mx.zeros((4, 3), dtype=mx.bool_), mx.zeros((2, 3)), 1)
 
 
 def test_brute_force_knn_non_contiguous_input():
@@ -202,3 +202,45 @@ def test_all_neighbors_small_n_and_bad_input():
     with pytest.raises(ValueError):
         mlxvs.all_neighbors(mx.zeros((10, 4)), 4, n_clusters=2, overlap_factor=3)
 
+
+@pytest.mark.parametrize(
+    "convert",
+    [
+        lambda x: x,  # numpy float32
+        lambda x: x.astype(np.float64),
+        lambda x: x.tolist(),
+        lambda x: mx.array(x).astype(mx.float16),
+        lambda x: mx.array(x).astype(mx.bfloat16),
+    ],
+    ids=["numpy", "float64", "list", "float16", "bfloat16"],
+)
+def test_array_likes_and_dtypes(convert):
+    x = rows(500, 16, 15)
+    want, _ = mlxvs.brute_force_knn(x, x, 5, "l2")
+    got, _ = mlxvs.brute_force_knn(convert(x), convert(x), 5, "l2")
+    # float16 inputs round the rows, so near ties may swap
+    assert (np.array(got)[:, 0] == np.arange(500)).all()
+    assert (np.array(got) == np.array(want)).mean() > 0.9
+    graph, _ = mlxvs.all_neighbors(convert(x), 4, "cosine", algo="brute_force")
+    assert np.array(graph).shape == (500, 4)
+
+
+def test_metric_and_algo_names():
+    x = rows(300, 8, 16)
+    for name in ["l2", "cosine", "inner_product"]:
+        a, _ = mlxvs.brute_force_knn(x, x, 3, name)
+        b, _ = mlxvs.brute_force_knn(x, x, 3, getattr(mlxvs.Metric, name))
+        assert (np.array(a) == np.array(b)).all()
+    with pytest.raises(ValueError, match="unknown Metric 'cosin'"):
+        mlxvs.nn_descent(x, 8, "cosin")
+    with pytest.raises(ValueError, match="unknown GraphBuild"):
+        mlxvs.all_neighbors(x, 8, algo="ivf_pq")
+
+
+def test_shape_errors():
+    with pytest.raises(ValueError, match="2-D"):
+        mlxvs.nn_descent(np.zeros(10, np.float32), 4)
+    with pytest.raises(ValueError, match="same number of columns"):
+        mlxvs.brute_force_knn(rows(10, 4, 1), rows(10, 5, 1), 2)
+    with pytest.raises(ValueError, match="same number of columns"):
+        mlxvs.kmeans_predict(rows(10, 4, 1), rows(2, 5, 1))
