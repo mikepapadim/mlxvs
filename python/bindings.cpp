@@ -160,7 +160,8 @@ NB_MODULE(_core, m) {
 
         The ``k`` nearest other rows of every row, nearest first. Parameters
         follow cuVS's ``nn_descent.index_params`` where they correspond
-        (``k`` is its ``graph_degree``).
+        (``k`` is its ``graph_degree``). Up to 4096 rows the graph is
+        computed exactly instead (as fast, and complete).
 
         Args:
             rows (array): Rows ``[n, d]``, any real dtype, ``n >= 2``.

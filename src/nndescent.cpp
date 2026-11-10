@@ -45,6 +45,14 @@ namespace {
 
 namespace k = kernels;
 
+/**
+ * Up to this many rows the graph is computed exactly: as fast as NN-Descent,
+ * and complete. Below about twice the list size NN-Descent cannot fill the
+ * lists either: a row's candidates collide in the hashed proposal slots and
+ * the rounds stop before every one is proposed.
+ */
+constexpr int NND_EXACT_ROWS = 4096;
+
 const mx::fast::CustomKernelFunction& sample_kernel() {
   static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
       "mlxvs_nnd_sample",
@@ -184,6 +192,12 @@ Neighbors nn_descent(
   if ((long long)n * k::NND_GROUP > std::numeric_limits<int>::max()) {
     throw std::invalid_argument(
         "[mlxvs::nn_descent] n too large for one dispatch");
+  }
+  if (n <= NND_EXACT_ROWS) {
+    AllNeighborsOptions exact;
+    exact.algo = GraphBuild::BruteForce;
+    exact.brute_force_below = 0;
+    return all_neighbors(rows, kq, metric, exact);
   }
   // proposal slots: list entries plus slots fill the merge's sort of NND_LIST
   int slots = k::NND_LIST - list;

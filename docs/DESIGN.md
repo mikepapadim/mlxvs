@@ -15,7 +15,9 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   [n, P]` (64-bit id | score words in hashed slots, -1-filled; the random start passes permutation blocks as
   `members`), `merge(graph, flags', proposals) -> graph', changed [n]`. One `mx::eval` per round reads the sum of
   `changed` for the termination test. Returned distances are recomputed in FP32 and the lists re-sorted, so FP16
-  joins only affect which neighbors are found.
+  joins only affect which neighbors are found. Up to 4096 rows `nn_descent` computes the graph exactly instead:
+  below about twice the list size the hashed proposal slots drop colliding candidates and the rounds can stop
+  before every row is proposed to every other, leaving lists short, and at that size exact k-NN is as fast.
 - MLX has no stable C++ ABI: mlxvs is built against one MLX release. The Python extension links the `mlx`
   wheel's own `libmlx` (located with `python -m mlx --cmake-dir`), so one process holds one copy.
 - `all_neighbors`: k-means (on unit rows for cosine) splits the rows; each row joins its `overlap_factor` nearest

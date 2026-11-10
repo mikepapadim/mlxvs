@@ -129,9 +129,9 @@ def test_nn_descent_clustered(metric):
 
 
 def test_nn_descent_fp32_path_and_small_n():
-    x = rows(300, 24, 12)
+    x = rows(5000, 24, 12)  # above the 4096 rows built exactly
     ids, _ = mlxvs.nn_descent(mx.array(x), 8, mlxvs.Metric.l2, fp16=False)
-    assert np.array(ids).shape == (300, 8)
+    assert np.array(ids).shape == (5000, 8)
     ids, _ = mlxvs.nn_descent(mx.array(rows(5, 4, 1)), 8, mlxvs.Metric.l2)
     ids = np.array(ids)
     assert (ids[:, :4] >= 0).all() and (ids[:, 4:] == -1).all()
@@ -244,3 +244,15 @@ def test_shape_errors():
         mlxvs.brute_force_knn(rows(10, 4, 1), rows(10, 5, 1), 2)
     with pytest.raises(ValueError, match="same number of columns"):
         mlxvs.kmeans_predict(rows(10, 4, 1), rows(2, 5, 1))
+
+
+@pytest.mark.parametrize("n", [3, 41, 66, 129, 300])
+@pytest.mark.parametrize("k", [32, 64, 128])
+def test_nn_descent_small_n_lists_complete(n, k):
+    # small n is built exactly: every row lists all the others it has room for
+    for seed in range(3):
+        x = rows(n, 24, seed)
+        ids = np.array(mlxvs.nn_descent(x, k, "l2", seed=seed)[0])
+        want = min(k, n - 1)
+        assert (ids[:, :want] >= 0).all() and (ids[:, want:] == -1).all()
+        assert (ids != np.arange(n)[:, None]).all()

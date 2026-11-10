@@ -123,9 +123,10 @@ struct NnDescentOptions {
 /**
  * Approximate k-nearest-neighbor graph of rows [n, d] (any real dtype) by
  * NN-Descent: the k nearest other rows of every row, nearest first, with the
- * ids and distances of brute_force_knn. Lists hold max(64, k) entries. Requires
- * 1 <= k <= 128 and n >= 2. Not deterministic: concurrent writes to hashed
- * proposal slots decide which colliding entry survives. Runs on the GPU.
+ * ids and distances of brute_force_knn. Lists hold max(64, k) entries. Up to
+ * 4096 rows the graph is computed exactly instead (as fast, and complete).
+ * Requires 1 <= k <= 128 and n >= 2. Not deterministic: concurrent writes to
+ * hashed proposal slots decide which colliding entry survives. Runs on the GPU.
  */
 MLXVS_API Neighbors nn_descent(
     const mx::array& rows,
