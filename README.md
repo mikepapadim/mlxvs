@@ -18,7 +18,7 @@ build step of a graph index (HNSW, Vamana, CAGRA).
 | `brute_force_knn(base, queries, k)` | Exact k-NN: matrix multiply and a fused top-k kernel, tiled over the base | `brute_force::search` |
 | `kmeans_fit(x, clusters)`, `kmeans_predict(x, centroids, m)` | k-means++ and Lloyd; the `m` nearest centroids per row | `cluster::kmeans` |
 | `nn_descent(rows, k)` | Approximate k-NN graph of the rows, FP16 SIMD-group joins | `nn_descent::build` |
-| `all_neighbors(rows, k, n_clusters, overlap_factor)` | k-NN graph built in overlapping k-means clusters, one on the GPU at a time | `all_neighbors::build` |
+| `all_neighbors(rows, k)` | k-NN graph built in overlapping k-means clusters, one on the GPU at a time; reads a NumPy array or memory-mapped file larger than memory where it is | `all_neighbors::build` |
 | `NearestNeighbors(n_neighbors).fit(X).kneighbors(Q)` | scikit-learn's interface over the above, NumPy in and out | |
 
 Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: graph pruning (CAGRA, Vamana) and graph search;
@@ -50,8 +50,8 @@ ids, dist = mlxvs.brute_force_knn(base, queries, k=10, metric="l2")
 # approximate k-NN graph: every row's 32 nearest other rows
 graph, graph_dist = mlxvs.nn_descent(base, k=32, metric="cosine")
 
-# the same graph built in 8 overlapping clusters, each row in its 2 nearest
-graph, graph_dist = mlxvs.all_neighbors(base, k=32, metric="cosine", n_clusters=8, overlap_factor=2)
+# the same graph in overlapping k-means clusters, as many as the GPU's memory asks for
+graph, graph_dist = mlxvs.all_neighbors(base, k=32, metric="cosine")
 
 graph = np.asarray(graph)  # results are mlx arrays; np.asarray converts without a copy
 ```
@@ -60,6 +60,14 @@ graph = np.asarray(graph)  # results are mlx arrays; np.asarray converts without
 - Outputs: `int32` ids, `-1` where fewer neighbors exist; `float32` distances, squared for `"l2"`, similarities
   (larger is closer) for `"cosine"` and `"inner_product"`.
 - `help(mlxvs.nn_descent)` and the others document every parameter.
+
+Data larger than memory: pass a `numpy.memmap`. The rows stay on disk; `all_neighbors` copies one cluster at a time
+to the GPU.
+
+```python
+rows = np.memmap("embeddings.f32", dtype=np.float32, mode="r").reshape(-1, 1024)
+graph, graph_dist = mlxvs.all_neighbors(rows, k=32, metric="cosine", verbose=True)
+```
 
 Coming from scikit-learn, change the import:
 
@@ -98,7 +106,7 @@ It builds the k-NN graph with each method and scores 2,000 random rows against t
 | lists of `max(64, k)` entries | `intermediate_graph_degree` | cuVS default 128 |
 | `max_iterations` = 24 | `max_iterations` = 20 | mlxvs samples 16 new neighbors per round and stops early when the lists settle |
 | `termination_threshold` = 1e-4 | `termination_threshold` = 1e-3 | tuned for graph quality in JVector; pass 1e-3 for cuVS's behaviour |
-| `all_neighbors(..., n_clusters, overlap_factor)` | `all_neighbors::index_params::{n_clusters, overlap_factor}` | same defaults: 1 cluster, overlap 2 |
+| `all_neighbors(..., n_clusters, overlap_factor)` | `all_neighbors::index_params::{n_clusters, overlap_factor}` | overlap 2 as cuVS; `n_clusters` defaults to 0 (chosen from the GPU's memory), cuVS's to 1 |
 | `algo="brute_force"` / `"nn_descent"` | `all_neighbors::index_params::graph_build_params` | cuVS also offers IVF-PQ |
 | `"cosine"` returns the cosine similarity | `CosineExpanded` returns 1 - cosine | similarities are "larger is closer"; `"l2"` is squared, as `L2Expanded` |
 | `int32` ids | `int64_t` ids | n < 2^31 rows |

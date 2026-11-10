@@ -26,3 +26,11 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   with the new one on the GPU: concatenated, sorted by id to drop repeats (a pair found in two clusters) and the row
   itself, then sorted by distance and cut to k. The graph [n, k] stays resident; the NN-Descent state (lists of
   max(64, k), proposals) exists for one cluster at a time.
+- Out-of-core rows and cluster sizes: `all_neighbors` reads rows through a gather function, so a host array or a
+  memory-mapped file is never copied whole. A k-means sample, one 65536-row tile during assignment and one cluster
+  at a time go to the GPU; a cluster's rows are copied by every core into one page-aligned buffer that MLX wraps
+  without a further copy. A cluster holds at most `max_cluster_rows` rows (by default what fits 40% of the GPU's
+  recommended working set at about `6 d + 2 KB` bytes per row). With `n_clusters = 0` there are enough clusters for
+  the average to be two thirds of that cap, since k-means clusters are uneven. A cluster still over the cap is
+  clustered again (its rows join the 2 nearest sub-clusters) rather than filled to a capacity by sending rows to
+  farther clusters, which separates those rows from their neighbors.

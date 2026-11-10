@@ -148,10 +148,10 @@ struct AllNeighborsOptions {
   GraphBuild algo = GraphBuild::NnDescent;
 
   /**
-   * k-means clusters the rows are split into; 1 builds the graph of all rows at
-   * once (no clustering).
+   * k-means clusters the rows are split into. 0: as many as the GPU's memory
+   * asks for (one when the rows fit). 1: all rows at once.
    */
-  int n_clusters = 1;
+  int n_clusters = 0;
 
   /**
    * Clusters each row joins (its nearest centroids), so that neighbors across a
@@ -164,6 +164,15 @@ struct AllNeighborsOptions {
    * with algo NnDescent: as fast, and exact.
    */
   int brute_force_below = 4096;
+
+  /**
+   * The most rows of one cluster; a larger k-means cluster is clustered again.
+   * 0: from the GPU's recommended working set.
+   */
+  long long max_cluster_rows = 0;
+
+  /** Print the clusters and the progress to stderr. */
+  bool verbose = false;
 
   KMeansOptions kmeans;
   NnDescentOptions nn_descent;
@@ -185,6 +194,29 @@ struct AllNeighborsOptions {
  */
 MLXVS_API Neighbors all_neighbors(
     const mx::array& rows,
+    int k,
+    Metric metric,
+    const AllNeighborsOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/**
+ * Rows that stay on the host: n rows of d float32, row-major, e.g. a
+ * memory-mapped file larger than memory. They must outlive the call.
+ */
+struct HostRows {
+  const float* data;
+  long long n;
+  int d;
+};
+
+/**
+ * all_neighbors of rows read where they are: only a k-means sample, one tile
+ * during assignment and one cluster at a time are copied to the GPU, so the
+ * rows need not fit in memory. Each cluster's rows are read from the host once
+ * per cluster they belong to.
+ */
+MLXVS_API Neighbors all_neighbors(
+    const HostRows& rows,
     int k,
     Metric metric,
     const AllNeighborsOptions& options = {},

@@ -49,6 +49,13 @@ def _array(x):
         return mx.array(np.asarray(x))
 
 
+def _host_rows(x):
+    """A float32 C-contiguous NumPy array (or memmap): read where it is."""
+    if type(x).__module__ != "numpy":
+        return False
+    return x.ndim == 2 and x.dtype == "float32" and x.flags.c_contiguous
+
+
 def _enum(kind, value):
     if isinstance(value, str):
         try:
@@ -89,6 +96,8 @@ def nn_descent(rows, k, metric=Metric.l2, **kwargs):
 def all_neighbors(rows, k, metric=Metric.l2, **kwargs):
     if "algo" in kwargs:
         kwargs["algo"] = _enum(GraphBuild, kwargs["algo"])
+    if _host_rows(rows):
+        return _core.all_neighbors_host(rows, k, _metric(metric), **kwargs)
     return _core.all_neighbors(_array(rows), k, _metric(metric), **kwargs)
 
 

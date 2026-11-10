@@ -1,6 +1,7 @@
 // Copyright © 2026 mikepapadim
 
 #include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
@@ -182,31 +183,69 @@ NB_MODULE(_core, m) {
             found) and distances ``float32 [n, k]``, as ``brute_force_knn``.
       )");
 
+  auto all_neighbors_options = [](mlxvs::GraphBuild algo,
+                                  int n_clusters,
+                                  int overlap_factor,
+                                  int brute_force_below,
+                                  long long max_cluster_rows,
+                                  bool verbose,
+                                  int max_iterations,
+                                  double termination_threshold,
+                                  bool fp16,
+                                  unsigned long long seed) {
+    mlxvs::AllNeighborsOptions options;
+    options.algo = algo;
+    options.n_clusters = n_clusters;
+    options.overlap_factor = overlap_factor;
+    options.brute_force_below = brute_force_below;
+    options.max_cluster_rows = max_cluster_rows;
+    options.verbose = verbose;
+    options.kmeans.seed = seed;
+    options.nn_descent.max_iterations = max_iterations;
+    options.nn_descent.termination_threshold = termination_threshold;
+    options.nn_descent.fp16 = fp16;
+    options.nn_descent.seed = seed;
+    return options;
+  };
+
+  // rows left on the host (a NumPy array, a memory-mapped file): read through
+  // their buffer, a cluster at a time
   m.def(
-      "all_neighbors",
-      [](const mx::array& rows,
-         int k,
-         mlxvs::Metric metric,
-         mlxvs::GraphBuild algo,
-         int n_clusters,
-         int overlap_factor,
-         int brute_force_below,
-         int max_iterations,
-         double termination_threshold,
-         bool fp16,
-         unsigned long long seed,
-         mx::StreamOrDevice s) {
-        mlxvs::AllNeighborsOptions options;
-        options.algo = algo;
-        options.n_clusters = n_clusters;
-        options.overlap_factor = overlap_factor;
-        options.brute_force_below = brute_force_below;
-        options.kmeans.seed = seed;
-        options.nn_descent.max_iterations = max_iterations;
-        options.nn_descent.termination_threshold = termination_threshold;
-        options.nn_descent.fp16 = fp16;
-        options.nn_descent.seed = seed;
-        auto r = mlxvs::all_neighbors(rows, k, metric, options, s);
+      "all_neighbors_host",
+      [all_neighbors_options](
+          nb::ndarray<const float, nb::ndim<2>, nb::c_contig, nb::device::cpu>
+              rows,
+          int k,
+          mlxvs::Metric metric,
+          mlxvs::GraphBuild algo,
+          int n_clusters,
+          int overlap_factor,
+          int brute_force_below,
+          long long max_cluster_rows,
+          bool verbose,
+          int max_iterations,
+          double termination_threshold,
+          bool fp16,
+          unsigned long long seed,
+          mx::StreamOrDevice s) {
+        mlxvs::HostRows host{
+            rows.data(), (long long)rows.shape(0), (int)rows.shape(1)};
+        auto r = mlxvs::all_neighbors(
+            host,
+            k,
+            metric,
+            all_neighbors_options(
+                algo,
+                n_clusters,
+                overlap_factor,
+                brute_force_below,
+                max_cluster_rows,
+                verbose,
+                max_iterations,
+                termination_threshold,
+                fp16,
+                seed),
+            s);
         return std::make_pair(r.ids, r.distances);
       },
       "rows"_a,
@@ -214,9 +253,63 @@ NB_MODULE(_core, m) {
       "metric"_a = mlxvs::Metric::L2,
       nb::kw_only(),
       "algo"_a = mlxvs::GraphBuild::NnDescent,
-      "n_clusters"_a = 1,
+      "n_clusters"_a = 0,
       "overlap_factor"_a = 2,
       "brute_force_below"_a = 4096,
+      "max_cluster_rows"_a = 0,
+      "verbose"_a = false,
+      "max_iterations"_a = 24,
+      "termination_threshold"_a = 0.0001,
+      "fp16"_a = true,
+      "seed"_a = 42,
+      "stream"_a = nb::none(),
+      "all_neighbors of float32 rows read from host memory.");
+
+  m.def(
+      "all_neighbors",
+      [all_neighbors_options](
+          const mx::array& rows,
+          int k,
+          mlxvs::Metric metric,
+          mlxvs::GraphBuild algo,
+          int n_clusters,
+          int overlap_factor,
+          int brute_force_below,
+          long long max_cluster_rows,
+          bool verbose,
+          int max_iterations,
+          double termination_threshold,
+          bool fp16,
+          unsigned long long seed,
+          mx::StreamOrDevice s) {
+        auto r = mlxvs::all_neighbors(
+            rows,
+            k,
+            metric,
+            all_neighbors_options(
+                algo,
+                n_clusters,
+                overlap_factor,
+                brute_force_below,
+                max_cluster_rows,
+                verbose,
+                max_iterations,
+                termination_threshold,
+                fp16,
+                seed),
+            s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "rows"_a,
+      "k"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "algo"_a = mlxvs::GraphBuild::NnDescent,
+      "n_clusters"_a = 0,
+      "overlap_factor"_a = 2,
+      "brute_force_below"_a = 4096,
+      "max_cluster_rows"_a = 0,
+      "verbose"_a = false,
       "max_iterations"_a = 24,
       "termination_threshold"_a = 0.0001,
       "fp16"_a = true,
@@ -231,6 +324,10 @@ NB_MODULE(_core, m) {
         on its own, and every row keeps the best ``k`` of the lists its
         clusters gave it. One cluster is on the GPU at a time.
 
+        A float32 NumPy array, including a ``numpy.memmap`` of a file larger
+        than memory, is read where it is: only one cluster's rows at a time
+        are copied to the GPU.
+
         Args:
             rows (array): Rows ``[n, d]``, any real dtype, ``n >= 2``.
             k (int): Neighbors per row, at most 128 with ``nn_descent`` (255
@@ -238,10 +335,15 @@ NB_MODULE(_core, m) {
             metric (Metric): ``inner_product``, ``l2`` (squared) or ``cosine``.
             algo (GraphBuild): ``nn_descent`` (approximate) or
               ``brute_force`` (exact) for each cluster.
-            n_clusters (int): k-means clusters; 1 builds all rows at once.
+            n_clusters (int): k-means clusters. 0 (default): as many as the
+              GPU's memory asks for, one when the rows fit. 1: all rows at
+              once.
             overlap_factor (int): Clusters each row joins.
             brute_force_below (int): Clusters of at most this many rows are
               built exactly whatever ``algo``.
+            max_cluster_rows (int): The most rows of one cluster; a larger
+              k-means cluster is clustered again. 0: from the GPU's memory.
+            verbose (bool): Print the clusters and the progress to stderr.
             max_iterations (int): NN-Descent rounds after the random start.
             termination_threshold (float): NN-Descent stops after a round
               that replaced fewer than this fraction of the list entries.

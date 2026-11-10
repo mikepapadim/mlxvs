@@ -294,3 +294,25 @@ def test_nearest_neighbors_errors():
     nn = mlxvs.NearestNeighbors(5).fit(rows(5, 3, 1))
     with pytest.raises(ValueError, match="n_neighbors"):
         nn.kneighbors()  # only 4 other rows
+
+
+def test_all_neighbors_memmap_out_of_core(tmp_path):
+    # rows read from a memory-mapped file, clusters capped well below n
+    x = blobs(30000, 32, 30, 19)
+    path = tmp_path / "rows.f32"
+    x.tofile(path)
+    mapped = np.memmap(path, dtype=np.float32, mode="r").reshape(-1, 32)
+    k = 16
+    ids, _ = mlxvs.all_neighbors(mapped, k, "l2", max_cluster_rows=7000)
+    ids = np.array(ids)
+    assert ids.shape == (30000, k) and (ids >= 0).all()
+    assert (ids != np.arange(30000)[:, None]).all()
+    sample = np.arange(0, 30000, 300)
+    scores = exact(mlxvs.Metric.l2, x[sample], x)
+    scores[np.arange(len(sample)), sample] = -np.inf
+    assert recall(ids[sample], scores, k) > 0.95
+    # a non-contiguous view takes the copying path and agrees
+    view = x[::2]
+    a, _ = mlxvs.all_neighbors(view, 4, "l2", algo="brute_force")
+    b, _ = mlxvs.all_neighbors(np.ascontiguousarray(view), 4, "l2", algo="brute_force")
+    assert (np.array(a) == np.array(b)).mean() > 0.999
