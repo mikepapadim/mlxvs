@@ -1,0 +1,35 @@
+[build-system]
+requires = [
+  "setuptools>=80",
+  "cmake>=3.25",
+  "mlx>=0.32.0,<0.33",
+  "nanobind==3.1.0",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlxvs"
+version = "0.1.0"
+description = "GPU k-NN search and k-NN graph construction on Apple silicon, built on MLX"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "mikepapadim" }]
+requires-python = ">=3.10"
+# MLX has no stable C++ ABI: the extension is built against one MLX release
+dependencies = ["mlx>=0.32.0,<0.33"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: MacOS",
+  "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage = "https://github.com/mikepapadim/mlxvs"
+
+[tool.setuptools]
+packages = ["mlxvs"]
+package-dir = { "" = "python" }
+zip-safe = false
+
+[tool.ruff]
+line-length = 88

@@ -189,7 +189,8 @@ constexpr const char* NND_JOIN_SIMD_SOURCE = R"(
     // dimensions k0 .. k0 + TILE - 1 of the members (zero past dim or for an empty member), two per load when dim is
     // even
     if ((dim & 1) == 0) {
-      const device half2* rows2 = (const device half2*)rows;
+      // two scalar loads, not a half2 pointer: MLX may bind a small input in
+      // the constant address space, where a device pointer cast fails
       for (uint e = lid; e < NND_JOIN * (TILE / 2); e += GROUP) {
         uint row = e / (TILE / 2);
         uint w = e - row * (TILE / 2);
@@ -197,7 +198,8 @@ constexpr const char* NND_JOIN_SIMD_SOURCE = R"(
         int d = k0 + 2 * (int)w;
         half2 v = half2(0.0h);
         if (id >= 0 && d < dim) {
-          v = rows2[((size_t)id * dim + d) / 2];
+          size_t at = (size_t)id * dim + d;
+          v = half2(rows[at], rows[at + 1]);
         }
         a[row * LDS + 2 * w] = v.x;
         a[row * LDS + 2 * w + 1] = v.y;

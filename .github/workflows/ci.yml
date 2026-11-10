@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cpp:
+    name: C++ (macOS 15, Apple silicon)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MLX
+        run: brew install mlx cmake
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/homebrew
+      - name: Build
+        run: cmake --build build -j 3
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Format
+        run: |
+          brew install clang-format
+          clang-format --dry-run --Werror include/mlxvs/*.h src/*.cpp src/*.h tests/*.cpp bench/*.cpp python/*.cpp
+
+  python:
+    name: Python (macOS 15, Apple silicon)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -v .
+      - name: Test
+        run: |
+          python -m pip install numpy pytest
+          python -m pytest -q python/tests

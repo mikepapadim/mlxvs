@@ -45,9 +45,10 @@ constexpr const char* TOPK_SOURCE = R"(
   int first = params[3];
   uint total = (uint)t + (first != 0 ? 0u : (uint)k);
   uint keff = min((uint)k, total);
-  const device float* row = scores + (size_t)q * (size_t)t;
-  const device float* prow = prev_scores + (size_t)q * (size_t)k;
-  const device int* pid = prev_ids + (size_t)q * (size_t)k;
+  // inputs are indexed, not bound to pointers: MLX binds some inputs (seen
+  // with small arrays) in the constant address space, others in device
+  size_t row = (size_t)q * (size_t)t;
+  size_t prev = (size_t)q * (size_t)k;
 
   threadgroup atomic_uint hist[SIMDS * 256];
   threadgroup uint shared_prefix;
@@ -67,7 +68,7 @@ constexpr const char* TOPK_SOURCE = R"(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint i = lid; i < total; i += THREADS) {
-      float v = i < (uint)t ? row[i] : prow[i - t];
+      float v = i < (uint)t ? scores[row + i] : prev_scores[prev + i - t];
       uint key = mlxvs_key(v);
       if ((key & mask) == prefix) {
         atomic_fetch_add_explicit(&hist[sg * 256 + ((key >> shift) & 255u)], 1u, memory_order_relaxed);
@@ -113,11 +114,11 @@ constexpr const char* TOPK_SOURCE = R"(
       float v;
       int id;
       if (i < (uint)t) {
-        v = row[i];
+        v = scores[row + i];
         id = id_offset + (int)i;
       } else {
-        v = prow[i - t];
-        id = pid[i - t];
+        v = prev_scores[prev + i - t];
+        id = prev_ids[prev + i - t];
       }
       uint key = mlxvs_key(v);
       if (key > prefix) {
