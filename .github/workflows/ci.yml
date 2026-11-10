@@ -18,6 +18,10 @@ jobs:
       - name: Build
         run: cmake --build build -j 3
       - name: Test
+        # Metal's API and shader validation: bounds checks on every buffer access, threadgroup memory limits
+        env:
+          MTL_DEBUG_LAYER: 1
+          MTL_SHADER_VALIDATION: 1
         run: ctest --test-dir build --output-on-failure
       - name: Format
         run: |

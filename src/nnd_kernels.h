@@ -168,7 +168,8 @@ constexpr const char* NND_JOIN_SIMD_SOURCE = R"(
   threadgroup float norm[NND_JOIN];
   threadgroup float worst[NND_JOIN];
   threadgroup half a[NND_JOIN * LDS];
-  threadgroup float out[2 * NND_S * NND_JOIN];
+  // the join's 32 x 64 scores go out in two halves of 16 rows: Metal allows 32 KB of threadgroup memory
+  threadgroup float out[NND_S * NND_JOIN];
 
   // each member, its squared norm and its list's worst score, read once
   if (lid < (uint)NND_JOIN) {
@@ -229,28 +230,33 @@ constexpr const char* NND_JOIN_SIMD_SOURCE = R"(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
-  // the 32 x 64 dot products, row-major, then one proposal test per pair
-  uint at = row_block * 8 * NND_JOIN + col_block * 8;
-  simdgroup_store(m0, out + at + 0, NND_JOIN);
-  simdgroup_store(m1, out + at + 8, NND_JOIN);
-  simdgroup_store(m2, out + at + 16, NND_JOIN);
-  simdgroup_store(m3, out + at + 24, NND_JOIN);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (uint e = lid; e < 2 * NND_S * NND_JOIN; e += GROUP) {
-    uint r = e / NND_JOIN;
-    nnd_propose(ids, norm, worst, proposals, metric, p, salt, r, e - r * NND_JOIN, out[e]);
+  // the 32 x 64 dot products, 16 rows at a time (row blocks 0-1, then 2-3), row-major, then one proposal test per pair
+  for (uint half_rows = 0; half_rows < 2; ++half_rows) {
+    if (row_block / 2 == half_rows) {
+      uint at = (row_block % 2) * 8 * NND_JOIN + col_block * 8;
+      simdgroup_store(m0, out + at + 0, NND_JOIN);
+      simdgroup_store(m1, out + at + 8, NND_JOIN);
+      simdgroup_store(m2, out + at + 16, NND_JOIN);
+      simdgroup_store(m3, out + at + 24, NND_JOIN);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = lid; e < NND_S * NND_JOIN; e += GROUP) {
+      uint r = e / NND_JOIN;
+      nnd_propose(ids, norm, worst, proposals, metric, p, salt, half_rows * NND_S + r, e - r * NND_JOIN, out[e]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
   }
 )";
 
 // The local join in FP32 SIMT, the same pairs and proposals as the SIMD-group
 // join: 16 x 16 threads, each scores 2 new members (rows ty, ty + 16) against 4
-// members (columns tx + 16 j) over staged tiles of 64 dimensions.
+// members (columns tx + 16 j) over staged tiles of 32 dimensions.
 //
 // inputs: rows [n, dim] float, norms [n] float, params int, graph_scores [n, K]
 // float, members [groups, 4S] int outputs: proposals [n, P] int64 (init -1)
 constexpr const char* NND_JOIN_SIMT_SOURCE = R"(
   const uint GROUP = 256;
-  const uint TILE = 64;
+  const uint TILE = 32;  // dimensions staged per step: 64 x 33 floats, within Metal's 32 KB of threadgroup memory
   const uint LDS = TILE + 1;
   uint node = threadgroup_position_in_grid.x;
   uint lid = thread_position_in_threadgroup.x;
