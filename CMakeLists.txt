@@ -9,7 +9,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(MLXVS_BUILD_PYTHON "Build the Python bindings (nanobind)" OFF)
-option(MLXVS_BUILD_TESTS "Build the C++ tests and benchmarks" ON)
+option(MLXVS_BUILD_TESTS "Build the C++ tests and benchmarks" ${PROJECT_IS_TOP_LEVEL})
 
 # MLX's C++ library. For the Python bindings, the one the `mlx` wheel ships, so
 # that one process holds one libmlx; otherwise an installed MLX (e.g. `brew

@@ -1,116 +1,103 @@
 # mlxvs
 
 GPU k-nearest-neighbor search and k-NN graph construction for Apple silicon, built on
-[MLX](https://github.com/ml-explore/mlx). The API follows NVIDIA [cuVS](https://github.com/rapidsai/cuvs) where
-the two correspond.
+[MLX](https://github.com/ml-explore/mlx). The same operations and parameter names as NVIDIA
+[cuVS](https://github.com/rapidsai/cuvs), on the Mac's GPU: exact k-NN, k-means, NN-Descent and batched
+all-neighbors graphs. It takes NumPy arrays or MLX arrays and runs on any M-series Mac.
 
-Status: early. C++ and Python APIs for exact k-NN, k-means and NN-Descent, tested; all-neighbors batching and graph
-pruning next. Private while the benchmarks against FAISS and HNSW baselines are run.
+Use it for the k-NN graph behind UMAP, t-SNE, clustering and deduplication, for exact k-NN ground truth, or as the
+build step of a graph index (HNSW, Vamana, CAGRA).
 
-## Why
+## What's in it
 
-Apple-silicon GPUs have brute-force and IVF search through FAISS's Metal backend. They have no GPU *graph
-construction*: building the approximate k-NN graph (NN-Descent, cuVS all-neighbors with batching) and pruning it
-into a search graph (CAGRA, Vamana/HNSW-style diversity). That is the expensive part of building a graph index.
-mlxvs targets it, starting from kernels proven in JVector's GPU build on Metal (TornadoVM), where they match the
-CUDA build's graph quality.
+| Function | What it does | cuVS counterpart |
+|---|---|---|
+| `brute_force_knn(base, queries, k)` | Exact k-NN: matrix multiply and a fused top-k kernel, tiled over the base | `brute_force::search` |
+| `kmeans_fit(x, clusters)`, `kmeans_predict(x, centroids, m)` | k-means++ and Lloyd; the `m` nearest centroids per row | `cluster::kmeans` |
+| `nn_descent(rows, k)` | Approximate k-NN graph of the rows, FP16 SIMD-group joins | `nn_descent::build` |
+| `all_neighbors(rows, k, n_clusters, overlap_factor)` | k-NN graph built in overlapping k-means clusters, one on the GPU at a time | `all_neighbors::build` |
 
-## Usage
+Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: graph pruning (CAGRA, Vamana) and graph search;
+see [Roadmap](#roadmap).
 
-```python
-import mlx.core as mx
-import mlxvs
+## 1. Install
 
-base = mx.random.normal((1_000_000, 128))
-queries = mx.random.normal((10_000, 128))
+Needs an Apple-silicon Mac on macOS 14 or later (as MLX) and Python 3.10+.
 
-# exact k-NN: ids int32 [nq, k], distances float32 [nq, k], nearest first
-ids, dist = mlxvs.brute_force_knn(base, queries, k=10, metric=mlxvs.Metric.l2)
-
-# approximate k-NN graph of the base (every row's 64 nearest other rows)
-graph, graph_dist = mlxvs.nn_descent(base, k=64, metric=mlxvs.Metric.cosine)
-
-# k-means for batching: the 2 nearest of 8 centroids for every row
-centroids = mlxvs.kmeans_fit(base, 8)
-assignment = mlxvs.kmeans_predict(base, centroids, m=2)
+```bash
+pip install git+https://github.com/mikepapadim/mlxvs
 ```
 
-The C++ API is the same set of functions in `include/mlxvs/mlxvs.h`; every operation takes a trailing
-`mx::StreamOrDevice s = {}` as MLX ops do. Metal kernels only: a CPU stream is rejected.
+pip builds the extension against your `mlx` wheel; that needs the Xcode Command Line Tools
+(`xcode-select --install`) and takes about a minute.
 
-## Plan
+## 2. Use
 
-| | Operation | cuVS counterpart | State |
-|---|---|---|---|
-| 1 | Exact k-NN: MLX matmul + fused radix-select top-k merge | `brute_force::search` | done, tested |
-| 2 | k-means: k-means++ start, Lloyd with GEMM assignment and one-hot GEMM update; m-nearest prediction for overlapping batches | `cluster::kmeans` | done, tested |
-| 3 | NN-Descent: port of JVector's Metal kernels (random start, S = 16 samples, 64-member FP16 SIMD-group join, hashed proposals, bitonic merge) | `nn_descent::build` | done, tested: recall@k 0.98-1.00 on clustered data and siftsmall (k = 32/96, all metrics); about 0.78-0.90 on iid Gaussian d = 64/128, the algorithm's known worst case |
-| 4 | All-neighbors with batching (k-means clusters, overlap) for data larger than memory | `all_neighbors::build` | |
-| 5 | Graph pruning (CAGRA rank-based / Vamana alpha), export to HNSW/JVector layouts | `cagra::build` (optimize) | |
-| 6 | Graph search | `cagra::search` | later |
+```python
+import numpy as np
+import mlxvs
 
-Bindings: C++ and Python (nanobind, `NB_DOMAIN mlx`, so arrays pass to and from `mlx.core` without copies).
-Planned: a C API for other languages (Java via Panama, as cuVS-java does).
+base = np.random.rand(1_000_000, 128).astype(np.float32)
+queries = base[:10_000]
 
-### cuVS parameter mapping
+# exact k-NN: ids [nq, k], distances [nq, k], nearest first
+ids, dist = mlxvs.brute_force_knn(base, queries, k=10, metric="l2")
 
-| mlxvs | cuVS | note |
+# approximate k-NN graph: every row's 32 nearest other rows
+graph, graph_dist = mlxvs.nn_descent(base, k=32, metric="cosine")
+
+# the same graph built in 8 overlapping clusters, each row in its 2 nearest
+graph, graph_dist = mlxvs.all_neighbors(base, k=32, metric="cosine", n_clusters=8, overlap_factor=2)
+
+graph = np.asarray(graph)  # results are mlx arrays; np.asarray converts without a copy
+```
+
+- Inputs: MLX arrays, NumPy arrays, or anything `np.asarray` accepts, in any real dtype (computed in float32).
+- Outputs: `int32` ids, `-1` where fewer neighbors exist; `float32` distances, squared for `"l2"`, similarities
+  (larger is closer) for `"cosine"` and `"inner_product"`.
+- `help(mlxvs.nn_descent)` and the others document every parameter.
+
+C++: the same functions in [`include/mlxvs/mlxvs.h`](include/mlxvs/mlxvs.h), taking `mx::array` and a trailing
+`mx::StreamOrDevice s = {}` as MLX ops do. In CMake (MLX found through `CMAKE_PREFIX_PATH`, e.g. Homebrew's):
+
+```cmake
+add_subdirectory(mlxvs)          # or FetchContent
+target_link_libraries(app PRIVATE mlxvs)
+```
+
+## 3. Run the benchmarks
+
+```bash
+curl -O ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz && tar xzf sift.tar.gz
+pip install faiss-cpu pynndescent   # optional CPU baselines
+python bench/bench_graph.py sift/sift_base.fvecs --k 32 --clusters 1,8 --baselines faiss,pynndescent
+```
+
+It builds the k-NN graph with each method and scores 2,000 random rows against the exact neighbors.
+
+## Coming from cuVS
+
+| mlxvs | cuVS | Note |
 |---|---|---|
 | `nn_descent(rows, k, ...)` | `nn_descent::index_params::graph_degree` | cuVS default 64 |
 | lists of `max(64, k)` entries | `intermediate_graph_degree` | cuVS default 128 |
-| `max_iterations` = 24 | `max_iterations` = 20 | mlxvs samples 16 new neighbors per round and stops early when the lists settle, so it is given more rounds |
-| `termination_threshold` = 1e-4 | `termination_threshold` = 1e-3 | mlxvs's default is the value tuned for graph quality in JVector; set 1e-3 for cuVS's behaviour |
-| `Metric.cosine` returns the cosine similarity | `CosineExpanded` returns 1 - cosine | similarities in mlxvs are "larger is closer"; L2 is the squared distance, as `L2Expanded` |
-| `kmeans_predict(x, c, m)` | `all_neighbors::index_params::{n_clusters, overlap_factor}` | cuVS defaults: 1 cluster, overlap 2 |
-| `int32` ids | `int64_t` ids | int64 ids planned for the all-neighbors API |
+| `max_iterations` = 24 | `max_iterations` = 20 | mlxvs samples 16 new neighbors per round and stops early when the lists settle |
+| `termination_threshold` = 1e-4 | `termination_threshold` = 1e-3 | tuned for graph quality in JVector; pass 1e-3 for cuVS's behaviour |
+| `all_neighbors(..., n_clusters, overlap_factor)` | `all_neighbors::index_params::{n_clusters, overlap_factor}` | same defaults: 1 cluster, overlap 2 |
+| `algo="brute_force"` / `"nn_descent"` | `all_neighbors::index_params::graph_build_params` | cuVS also offers IVF-PQ |
+| `"cosine"` returns the cosine similarity | `CosineExpanded` returns 1 - cosine | similarities are "larger is closer"; `"l2"` is squared, as `L2Expanded` |
+| `int32` ids | `int64_t` ids | n < 2^31 rows |
 
-## Design notes
+## Roadmap
 
-- Kernels are Metal source compiled at run time by `mlx::core::fast::metal_kernel`: no offline Metal toolchain
-  needed, and they run on MLX arrays and MLX's command queue.
-- GEMM-shaped work (distances, k-means assignment) uses MLX's matmul. Selection uses mlxvs kernels: MLX's
-  `argpartition` runs a full merge sort along the axis, slow for k-NN shapes (k = 10..256 of 10^4..10^6 columns).
-- `topk_merge`: one threadgroup per query, radix select on order-preserving float keys (4 passes of 8 bits,
-  per-SIMD-group histograms against atomic contention), one gather pass, bitonic sort of the winners, merged
-  with the running list, so a scan over base tiles keeps only [nq, k] between tiles.
-- `nn_descent`: MLX custom kernels cannot update an input in place (every output is a fresh array, optionally
-  pre-filled), so each round is a pure function of the graph: `sample(ids, flags) -> members [n, 64], flags'`
-  (reverse samples written to hashed slots of a -1-filled array), `join(rows, norms, scores, members) -> proposals
-  [n, P]` (64-bit id | score words in hashed slots, -1-filled; the random start passes permutation blocks as
-  `members`), `merge(graph, flags', proposals) -> graph', changed [n]`. One `mx::eval` per round reads the sum of
-  `changed` for the termination test. Returned distances are recomputed in FP32 and the lists re-sorted, so FP16
-  joins only affect which neighbors are found.
-- MLX has no stable C++ ABI: mlxvs is built against one MLX release. The Python extension links the `mlx`
-  wheel's own `libmlx` (located with `python -m mlx --cmake-dir`), so one process holds one copy.
+1. Graph pruning: CAGRA rank-based and Vamana alpha pruning, export to HNSW and JVector layouts (`cagra::build`).
+2. Graph search (`cagra::search`).
+3. Wheels on PyPI; a C API for other languages (Java via Panama, as cuVS-java does).
 
-## Code style
+How the kernels work: [docs/DESIGN.md](docs/DESIGN.md). Building, testing and code style:
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-MLX's: its `.clang-format` (2-space indent, 80 columns, `// Copyright © ...` header lines), `[mlxvs::op] Message.`
-error strings, every public operation taking a trailing `StreamOrDevice s = {}`, ruff for Python, and its
-pre-commit hooks (`pre-commit install`).
-
-## Build
-
-C++:
-
-```bash
-brew install mlx cmake
-cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/homebrew
-cmake --build build
-ctest --test-dir build                 # exact k-NN vs a CPU reference; NN-Descent recall vs exact k-NN
-./build/bench_knn base.f32 1024 4096 65536 96
-```
-
-Python (builds against the interpreter's `mlx` wheel):
-
-```bash
-pip install .
-pytest python/tests
-```
-
-CI (`.github/workflows/ci.yml`) runs both on `macos-15` Apple-silicon runners.
-
-## Licence
+## License
 
 Apache-2.0. The NN-Descent kernels are a port of JVector's `jvector-gpu` module (Apache-2.0, DataStax, Inc.); see
-NOTICE.
+[NOTICE](NOTICE).

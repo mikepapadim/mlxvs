@@ -44,3 +44,16 @@ jobs:
         run: |
           python -m pip install numpy pytest
           python -m pytest -q python/tests
+      - name: README example
+        # the Python example in README.md, as written
+        run: |
+          python - <<'PY'
+          import re
+          code = re.findall(r"```python\n(.*?)```", open("README.md").read(), re.S)[0]
+          exec(compile(code, "README.md", "exec"))
+          PY
+      - name: Ruff
+        run: |
+          python -m pip install ruff
+          ruff check python bench
+          ruff format --check python bench

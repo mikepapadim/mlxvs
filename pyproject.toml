@@ -17,14 +17,25 @@ authors = [{ name = "mikepapadim" }]
 requires-python = ">=3.10"
 # MLX has no stable C++ ABI: the extension is built against one MLX release
 dependencies = ["mlx>=0.32.0,<0.33"]
+keywords = [
+  "nearest-neighbors", "knn", "knn-graph", "nn-descent", "vector-search",
+  "k-means", "gpu", "metal", "apple-silicon", "mlx", "cuvs", "umap",
+]
 classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Programming Language :: C++",
   "Programming Language :: Python :: 3",
-  "Operating System :: MacOS",
-  "Topic :: Scientific/Engineering",
+  "Operating System :: MacOS :: MacOS X",
+  "Environment :: GPU",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Database :: Database Engines/Servers",
 ]
 
 [project.urls]
 Homepage = "https://github.com/mikepapadim/mlxvs"
+Issues = "https://github.com/mikepapadim/mlxvs/issues"
 
 [tool.setuptools]
 packages = ["mlxvs"]

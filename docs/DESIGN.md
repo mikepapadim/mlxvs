@@ -1,0 +1,26 @@
+# mlxvs design notes
+
+How the operations map onto MLX and Metal. For the API see the [README](../README.md).
+
+- Kernels are Metal source compiled at run time by `mlx::core::fast::metal_kernel`: no offline Metal toolchain
+  needed, and they run on MLX arrays and MLX's command queue.
+- GEMM-shaped work (distances, k-means assignment) uses MLX's matmul. Selection uses mlxvs kernels: MLX's
+  `argpartition` runs a full merge sort along the axis, slow for k-NN shapes (k = 10..256 of 10^4..10^6 columns).
+- `topk_merge`: one threadgroup per query, radix select on order-preserving float keys (4 passes of 8 bits,
+  per-SIMD-group histograms against atomic contention), one gather pass, bitonic sort of the winners, merged
+  with the running list, so a scan over base tiles keeps only [nq, k] between tiles.
+- `nn_descent`: MLX custom kernels cannot update an input in place (every output is a fresh array, optionally
+  pre-filled), so each round is a pure function of the graph: `sample(ids, flags) -> members [n, 64], flags'`
+  (reverse samples written to hashed slots of a -1-filled array), `join(rows, norms, scores, members) -> proposals
+  [n, P]` (64-bit id | score words in hashed slots, -1-filled; the random start passes permutation blocks as
+  `members`), `merge(graph, flags', proposals) -> graph', changed [n]`. One `mx::eval` per round reads the sum of
+  `changed` for the termination test. Returned distances are recomputed in FP32 and the lists re-sorted, so FP16
+  joins only affect which neighbors are found.
+- MLX has no stable C++ ABI: mlxvs is built against one MLX release. The Python extension links the `mlx`
+  wheel's own `libmlx` (located with `python -m mlx --cmake-dir`), so one process holds one copy.
+- `all_neighbors`: k-means (on unit rows for cosine) splits the rows; each row joins its `overlap_factor` nearest
+  clusters. Each cluster's rows are gathered and its graph built on its own (`nn_descent`, or `brute_force_knn` for
+  clusters of at most `brute_force_below` rows), its local ids mapped back to row ids, and every member's list merged
+  with the new one on the GPU: concatenated, sorted by id to drop repeats (a pair found in two clusters) and the row
+  itself, then sorted by distance and cut to k. The graph [n, k] stays resident; the NN-Descent state (lists of
+  max(64, k), proposals) exists for one cluster at a time.
