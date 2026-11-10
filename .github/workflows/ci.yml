@@ -55,5 +55,5 @@ jobs:
       - name: Ruff
         run: |
           python -m pip install ruff
-          ruff check python bench
-          ruff format --check python bench
+          ruff check python bench examples
+          ruff format --check python bench examples

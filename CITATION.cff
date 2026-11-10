@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use mlxvs in your work, please cite it."
+title: "mlxvs: GPU k-NN search and k-NN graph construction on Apple silicon"
+type: software
+authors:
+  - alias: mikepapadim
+repository-code: "https://github.com/mikepapadim/mlxvs"
+license: Apache-2.0
+version: 0.1.0

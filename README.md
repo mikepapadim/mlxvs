@@ -1,5 +1,8 @@
 # mlxvs
 
+[![CI](https://github.com/mikepapadim/mlxvs/actions/workflows/ci.yml/badge.svg)](https://github.com/mikepapadim/mlxvs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 GPU k-nearest-neighbor search and k-NN graph construction for Apple silicon, built on
 [MLX](https://github.com/ml-explore/mlx). The same operations and parameter names as NVIDIA
 [cuVS](https://github.com/rapidsai/cuvs), on the Mac's GPU: exact k-NN, k-means, NN-Descent and batched
@@ -16,6 +19,7 @@ build step of a graph index (HNSW, Vamana, CAGRA).
 | `kmeans_fit(x, clusters)`, `kmeans_predict(x, centroids, m)` | k-means++ and Lloyd; the `m` nearest centroids per row | `cluster::kmeans` |
 | `nn_descent(rows, k)` | Approximate k-NN graph of the rows, FP16 SIMD-group joins | `nn_descent::build` |
 | `all_neighbors(rows, k, n_clusters, overlap_factor)` | k-NN graph built in overlapping k-means clusters, one on the GPU at a time | `all_neighbors::build` |
+| `NearestNeighbors(n_neighbors).fit(X).kneighbors(Q)` | scikit-learn's interface over the above, NumPy in and out | |
 
 Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: graph pruning (CAGRA, Vamana) and graph search;
 see [Roadmap](#roadmap).
@@ -56,6 +60,17 @@ graph = np.asarray(graph)  # results are mlx arrays; np.asarray converts without
 - Outputs: `int32` ids, `-1` where fewer neighbors exist; `float32` distances, squared for `"l2"`, similarities
   (larger is closer) for `"cosine"` and `"inner_product"`.
 - `help(mlxvs.nn_descent)` and the others document every parameter.
+
+Coming from scikit-learn, change the import:
+
+```python
+nn = mlxvs.NearestNeighbors(n_neighbors=10, metric="euclidean").fit(base)
+distances, indices = nn.kneighbors(queries)   # NumPy arrays, scikit-learn's units
+distances, indices = nn.kneighbors()          # the base rows' own neighbors
+```
+
+Examples: [UMAP from a GPU k-NN graph](examples/umap_knn.py) and
+[exact ground truth for an ANN benchmark](examples/ground_truth.py) (`.fvecs` in, `.ivecs` out).
 
 C++: the same functions in [`include/mlxvs/mlxvs.h`](include/mlxvs/mlxvs.h), taking `mx::array` and a trailing
 `mx::StreamOrDevice s = {}` as MLX ops do. In CMake (MLX found through `CMAKE_PREFIX_PATH`, e.g. Homebrew's):

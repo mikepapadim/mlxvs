@@ -256,3 +256,41 @@ def test_nn_descent_small_n_lists_complete(n, k):
         want = min(k, n - 1)
         assert (ids[:, :want] >= 0).all() and (ids[:, want:] == -1).all()
         assert (ids != np.arange(n)[:, None]).all()
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "sqeuclidean", "cosine"])
+def test_nearest_neighbors_matches_numpy(metric):
+    x, q = rows(3000, 16, 17), rows(40, 16, 18)
+    nn = mlxvs.NearestNeighbors(6, metric=metric).fit(x)
+    assert (nn.n_samples_fit_, nn.n_features_in_) == (3000, 16)
+
+    def reference(a, b):
+        if metric == "cosine":
+            a = a / np.linalg.norm(a, axis=1, keepdims=True)
+            b = b / np.linalg.norm(b, axis=1, keepdims=True)
+            return 1 - a @ b.T
+        d2 = ((a[:, None, :] - b[None, :, :]) ** 2).sum(-1)
+        return np.sqrt(d2) if metric == "euclidean" else d2
+
+    want = reference(q, x)
+    dist, ids = nn.kneighbors(q)
+    assert ids.dtype == np.int64 and ids.shape == (40, 6)
+    assert (ids == np.argsort(want, axis=1)[:, :6]).mean() > 0.99
+    assert np.allclose(dist, np.sort(want, axis=1)[:, :6], atol=1e-3)
+    # without queries: the fitted rows' neighbors, never the row itself
+    dist, ids = nn.kneighbors(n_neighbors=3)
+    assert ids.shape == (3000, 3) and (ids != np.arange(3000)[:, None]).all()
+    assert (np.diff(dist, axis=1) >= -1e-5).all()
+    assert nn.kneighbors(q, return_distance=False).shape == (40, 6)
+
+
+def test_nearest_neighbors_errors():
+    with pytest.raises(ValueError, match="unknown metric"):
+        mlxvs.NearestNeighbors(metric="manhattan")
+    with pytest.raises(ValueError, match="algorithm"):
+        mlxvs.NearestNeighbors(algorithm="kd_tree")
+    with pytest.raises(RuntimeError, match="fit"):
+        mlxvs.NearestNeighbors().kneighbors()
+    nn = mlxvs.NearestNeighbors(5).fit(rows(5, 3, 1))
+    with pytest.raises(ValueError, match="n_neighbors"):
+        nn.kneighbors()  # only 4 other rows

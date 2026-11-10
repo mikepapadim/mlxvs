@@ -19,6 +19,7 @@ from mlxvs._core import GraphBuild, Metric
 __all__ = [
     "GraphBuild",
     "Metric",
+    "NearestNeighbors",
     "all_neighbors",
     "brute_force_knn",
     "kmeans_fit",
@@ -26,6 +27,15 @@ __all__ = [
     "nn_descent",
 ]
 __version__ = "0.1.0"
+
+
+def __getattr__(name):
+    # NearestNeighbors needs NumPy, which mlxvs otherwise does not
+    if name == "NearestNeighbors":
+        from mlxvs._neighbors import NearestNeighbors
+
+        return NearestNeighbors
+    raise AttributeError(f"module 'mlxvs' has no attribute {name!r}")
 
 
 def _array(x):
