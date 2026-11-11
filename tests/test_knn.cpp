@@ -162,6 +162,10 @@ int main() {
   knn_case(Metric::L2, "l2 k=256", 3000, 16, 32, 256, 1000);
   knn_case(Metric::InnerProduct, "n < k", 50, 8, 16, 100, 20);
   knn_case(Metric::Cosine, "k=1", 4000, 32, 64, 1, 512);
+  // a tile of 2^25 rows leaves query blocks of 8: several blocks, a partial
+  // last one
+  knn_case(Metric::L2, "l2 qblocks", 5000, 61, 64, 16, 1 << 25);
+  knn_case(Metric::Cosine, "cos qblocks", 3000, 29, 32, 10, 1 << 25);
   std::printf(
       failures == 0 ? "all tests passed\n" : "%d check(s) failed\n", failures);
   return failures == 0 ? 0 : 1;

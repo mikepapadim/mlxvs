@@ -49,6 +49,13 @@ def recall(metric, ids, dist, exact_dist, k):
 
 
 def mlxvs_builds(x, a):
+    if a.exact:
+        yield (
+            "mlxvs exact (brute force)",
+            lambda: mlxvs.all_neighbors(
+                x, a.k, a.metric, algo="brute_force", n_clusters=1
+            ),
+        )
     yield "mlxvs nn_descent", lambda: mlxvs.nn_descent(x, a.k, a.metric)
     for c in [int(c) for c in a.clusters.split(",") if c]:
         yield (
@@ -98,6 +105,7 @@ def main():
     p.add_argument(
         "--baselines", default="", help="comma-separated: faiss, pynndescent"
     )
+    p.add_argument("--exact", action="store_true", help="also mlxvs's exact graph")
     p.add_argument("--sample", type=int, default=2000, help="rows scored")
     p.add_argument("--runs", type=int, default=1, help="timed runs of mlxvs builds")
     a = p.parse_args()

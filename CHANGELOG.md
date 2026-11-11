@@ -2,7 +2,8 @@
 
 ## 0.1.0 (unreleased)
 
-- `brute_force_knn`: exact k-NN, tiled matrix multiply and a fused top-k kernel.
+- `brute_force_knn`: exact k-NN, tiled matrix multiply and a fused top-k kernel; queries taken in blocks, so a
+  step's score matrix stays near 1 GB even for an exact k-NN graph (queries = base).
 - `kmeans_fit`, `kmeans_predict`: k-means++ and Lloyd; the m nearest centroids per row.
 - `nn_descent`: approximate k-NN graph (FP16 SIMD-group joins); up to 4096 rows built exactly.
 - `all_neighbors`: k-NN graph in overlapping k-means clusters, NN-Descent or exact per cluster.

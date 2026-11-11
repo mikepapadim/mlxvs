@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <mlx/fast.h>
 
@@ -87,39 +88,57 @@ Neighbors brute_force_knn(
   int d = base.shape(1);
   int nq = queries.shape(0);
   int tile = std::max(1, options.tile_rows);
-  mx::array q = metric == Metric::Cosine ? unit_rows(queries) : queries;
-  mx::eval(q);
-  mx::array ids = mx::full({nq, k}, -1, mx::int32);
-  mx::array best =
-      mx::full({nq, k}, -std::numeric_limits<float>::infinity(), mx::float32);
-  for (int t0 = 0; t0 < n; t0 += tile) {
-    int t1 = std::min(n, t0 + tile);
-    mx::array rows = mx::slice(base, {t0, 0}, {t1, d});
-    if (metric == Metric::Cosine) {
-      rows = unit_rows(rows);
+  // queries in blocks too, so that one step's [block, tile] score matrix stays
+  // at about 1 GB whatever nq is (a k-NN graph has nq = n)
+  int block = (int)std::max(
+      1LL, std::min((long long)std::max(nq, 1), (1LL << 28) / tile));
+  std::vector<mx::array> id_parts, best_parts;
+  for (int q0 = 0; q0 < nq || (nq == 0 && q0 == 0); q0 += block) {
+    int q1 = std::min(nq, q0 + block);
+    mx::array qs = mx::slice(queries, {q0, 0}, {q1, d});
+    mx::array q = metric == Metric::Cosine ? unit_rows(qs) : qs;
+    mx::eval(q);
+    mx::array ids = mx::full({q1 - q0, k}, -1, mx::int32);
+    mx::array best = mx::full(
+        {q1 - q0, k}, -std::numeric_limits<float>::infinity(), mx::float32);
+    for (int t0 = 0; t0 < n; t0 += tile) {
+      int t1 = std::min(n, t0 + tile);
+      mx::array rows = mx::slice(base, {t0, 0}, {t1, d});
+      if (metric == Metric::Cosine) {
+        rows = unit_rows(rows);
+      }
+      mx::array scores = mx::matmul(q, mx::transpose(rows));
+      if (metric == Metric::L2) {
+        // -|q - b|^2 + |q|^2 = 2 q.b - |b|^2: the same order per query, |q|^2
+        // added back at the end
+        scores =
+            2.0f * scores - mx::expand_dims(mx::sum(mx::square(rows), 1), 0);
+      }
+      auto merged = topk_merge(scores, ids, best, t0, t0 == 0, k);
+      ids = merged.first;
+      best = merged.second;
+      mx::eval(ids, best); // one tile's score matrix at a time
     }
-    mx::array scores = mx::matmul(q, mx::transpose(rows));
     if (metric == Metric::L2) {
-      // -|q - b|^2 + |q|^2 = 2 q.b - |b|^2: the same order per query, |q|^2
-      // added back at the end
-      scores = 2.0f * scores - mx::expand_dims(mx::sum(mx::square(rows), 1), 0);
+      auto qq = mx::sum(mx::square(qs), 1, /*keepdims=*/true);
+      // squared distances, ascending; a missing neighbor (id -1) is +inf so
+      // that rows stay sorted
+      best = mx::where(
+          ids >= 0,
+          mx::maximum(qq - best, mx::array(0.0f)),
+          mx::array(std::numeric_limits<float>::infinity()));
+      mx::eval(best);
     }
-    auto merged = topk_merge(scores, ids, best, t0, t0 == 0, k);
-    ids = merged.first;
-    best = merged.second;
-    mx::eval(ids, best); // one tile's score matrix at a time
+    id_parts.push_back(ids);
+    best_parts.push_back(best);
+    if (nq == 0) {
+      break;
+    }
   }
-  if (metric == Metric::L2) {
-    auto qq = mx::sum(mx::square(queries), 1, /*keepdims=*/true);
-    // squared distances, ascending; a missing neighbor (id -1) is +inf so that
-    // rows stay sorted
-    best = mx::where(
-        ids >= 0,
-        mx::maximum(qq - best, mx::array(0.0f)),
-        mx::array(std::numeric_limits<float>::infinity()));
-    mx::eval(best);
+  if (id_parts.size() == 1) {
+    return {id_parts[0], best_parts[0]};
   }
-  return {ids, best};
+  return {mx::concatenate(id_parts, 0), mx::concatenate(best_parts, 0)};
 }
 
 } // namespace mlxvs

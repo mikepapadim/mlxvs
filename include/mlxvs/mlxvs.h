@@ -41,7 +41,10 @@ struct Neighbors {
 
 /** Options of brute_force_knn. */
 struct KnnOptions {
-  /** Base rows scored per step, bounding the [nq, tile_rows] score matrix. */
+  /**
+   * Base rows scored per step. Queries are taken in blocks too, so one step's
+   * [block, tile_rows] score matrix stays at about 1 GB.
+   */
   int tile_rows = 65536;
 };
 
