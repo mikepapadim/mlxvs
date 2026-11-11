@@ -18,8 +18,8 @@ ids, dist = mlxvs.graph_search(vectors, graph, queries, k=10)    # ~70k queries/
 ```
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/sift1m-dark.png">
-  <img alt="SIFT1M on a MacBook Pro M3 Pro: queries per second against recall@10. mlxVS CAGRA degree 32 (built in 10.4 s) reaches 69,500 queries/s at 0.976 recall; hnswlib on 12 CPU cores (built in 88.1 s) reaches 32,200 at 0.964. Numbers in the Benchmarks table." src="docs/img/sift1m-light.png" width="720">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/sift1m-dark.png">
+  <img alt="SIFT1M on a MacBook Pro M3 Pro: queries per second against recall@10. mlxVS CAGRA degree 32 (built in 10.4 s) reaches 69,500 queries/s at 0.976 recall; hnswlib on 12 CPU cores (built in 88.1 s) reaches 32,200 at 0.964. Numbers in the Benchmarks table." src="https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/sift1m-light.png" width="720">
 </picture>
 
 Use it for approximate nearest-neighbor search, for the k-NN graph behind UMAP, t-SNE, clustering and

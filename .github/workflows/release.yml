@@ -18,6 +18,10 @@ jobs:
     env:
       # as MLX's own wheels: the oldest macOS MLX supports
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+      # the extension is arm64 only (MLX's Metal backend); without these the
+      # python.org interpreters tag the wheel universal2
+      _PYTHON_HOST_PLATFORM: macosx-14.0-arm64
+      ARCHFLAGS: -arch arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
