@@ -49,9 +49,6 @@ Needs an Apple-silicon Mac on macOS 14 or later (as MLX) and Python 3.10+.
 pip install mlxvs
 ```
 
-> **11 Nov 2026:** the PyPI upload is waiting on a GitHub Actions outage. Until `pip install mlxvs` finds it, install
-> from GitHub with the second command below (needs the Xcode Command Line Tools, about a minute to build).
-
 Wheels for Python 3.10 to 3.14 on Apple silicon, built against the `mlx` release they pin (MLX has no stable C++
 ABI). The latest code from GitHub builds the extension against your `mlx` wheel; that needs the Xcode Command Line
 Tools (`xcode-select --install`) and takes about a minute:
