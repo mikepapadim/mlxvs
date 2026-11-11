@@ -5,21 +5,23 @@
 [![CI](https://github.com/mikepapadim/mlxvs/actions/workflows/ci.yml/badge.svg)](https://github.com/mikepapadim/mlxvs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Index a million vectors in 10 seconds, then answer 70,000 queries per second at 97.6% recall, on a MacBook Pro's
-GPU: twice the queries per second of HNSW on all 12 CPU cores at the same recall, from an index built 8 times faster
+Index a million vectors in 11 seconds, then answer 76,000 queries per second at 97.6% recall, on a MacBook Pro's
+GPU: 2.7 times the queries per second of HNSW on all 12 CPU cores at the same recall, from an index built 8 times
+faster. On a million 1536-d OpenAI embeddings: built 6 times faster, twice the queries per second
 ([numbers](#benchmarks)). mlxVS brings NVIDIA [cuVS](https://github.com/rapidsai/cuvs)'s operations and parameter
 names to the Mac, built on [MLX](https://github.com/ml-explore/mlx): exact k-NN, k-means, NN-Descent, batched
-all-neighbors graphs, CAGRA graph pruning and search. NumPy or MLX arrays in, any M-series Mac.
+all-neighbors graphs, CAGRA graph pruning and search, and export to hnswlib. NumPy or MLX arrays in, any M-series Mac.
 
 ```python
 import mlxvs
-graph = mlxvs.cagra_build(vectors, graph_degree=32)              # 1M x 128 in ~10 s
-ids, dist = mlxvs.graph_search(vectors, graph, queries, k=10)    # ~70k queries/s at 97.6% recall
+index = mlxvs.CagraIndex.build(vectors, graph_degree=32)   # 1M x 128 in ~11 s
+ids, dist = index.search(queries, k=10)                     # ~76k queries/s at 97.6% recall
+index.save("vectors.safetensors")
 ```
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/sift1m-dark.png">
-  <img alt="SIFT1M on a MacBook Pro M3 Pro: queries per second against recall@10. mlxVS CAGRA degree 32 (built in 10.4 s) reaches 69,500 queries/s at 0.976 recall; hnswlib on 12 CPU cores (built in 88.1 s) reaches 32,200 at 0.964. Numbers in the Benchmarks table." src="https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/sift1m-light.png" width="720">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/bench-dark.png">
+  <img alt="Queries per second against recall@10 on a MacBook Pro M3 Pro. SIFT1M: mlxVS float32 reaches 76,400 queries/s at 0.976 recall (index built in 10.8 s); hnswlib on 12 CPU cores reaches 28,100 at 0.964 (built in 91.8 s). ada-002 1M: mlxVS 10,000 queries/s at 0.979 (built in 125 s); hnswlib 5,100 at 0.974 (built in 732 s). Numbers in the Benchmarks tables." src="https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/bench-light.png" width="860">
 </picture>
 
 Use it for approximate nearest-neighbor search, for the k-NN graph behind UMAP, t-SNE, clustering and
@@ -36,6 +38,8 @@ deduplication, for exact k-NN ground truth, or as the build step of a graph inde
 | `cagra_build(rows, graph_degree)` | Search graph: k-NN graph (`all_neighbors`) pruned by `cagra_optimize` | `cagra::build` |
 | `cagra_optimize(knn_graph, graph_degree)` | CAGRA's rank-based pruning (fewest two-hop detours) plus reverse edges | `cagra::optimize` |
 | `graph_search(base, graph, queries, k)` | Approximate k-NN of queries by beam search of a graph, one threadgroup per query (CAGRA's single-CTA search) | `cagra::search` |
+| `CagraIndex.build(rows, graph_degree)`, `.search(queries, k)`, `.save(path)`, `CagraIndex.load(path)` | A search index: the dataset (float32 or float16, normalized for cosine) and its CAGRA graph, stored once for search; one `.safetensors` file | `cagra::build`, `search`, `serialize` |
+| `CagraIndex.save_hnswlib(path)` | The index in hnswlib's format: build on the GPU, serve with hnswlib on any CPU | `cagra::serialize_to_hnswlib` |
 | `NearestNeighbors(n_neighbors).fit(X).kneighbors(Q)` | scikit-learn's interface over the above, NumPy in and out | |
 
 Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: Vamana pruning and export to HNSW and JVector; see
@@ -75,10 +79,15 @@ graph, graph_dist = mlxvs.nn_descent(base, k=32, metric="cosine")
 # the same graph in overlapping k-means clusters, as many as the GPU's memory asks for
 graph, graph_dist = mlxvs.all_neighbors(base, k=32, metric="cosine")
 
-# a search index: the k-NN graph pruned by CAGRA's rules, then queries searched over it;
-# itopk_size trades speed for recall
-index = mlxvs.cagra_build(base, graph_degree=32, metric="cosine")
-ids, dist = mlxvs.graph_search(base, index, queries, k=10, metric="cosine", itopk_size=64)
+# a search index: the k-NN graph pruned by CAGRA's rules, with the rows stored for search
+# (float16: half the memory); itopk_size trades speed for recall
+index = mlxvs.CagraIndex.build(base, graph_degree=32, metric="cosine", dtype="float16")
+ids, sims = index.search(queries, k=10, itopk_size=64)
+index.save("index.safetensors")
+index = mlxvs.CagraIndex.load("index.safetensors")
+
+# or serve it from the CPU, anywhere hnswlib runs (Linux servers too): labels are row ids
+index.save_hnswlib("index.hnsw")   # then hnswlib.Index(space="cosine", dim=128).load_index("index.hnsw")
 
 graph = np.asarray(graph)  # results are mlx arrays; np.asarray converts without a copy
 ```
@@ -87,6 +96,9 @@ graph = np.asarray(graph)  # results are mlx arrays; np.asarray converts without
 - Outputs: `int32` ids, `-1` where fewer neighbors exist; `float32` distances, squared for `"l2"`, similarities
   (larger is closer) for `"cosine"` and `"inner_product"`.
 - `help(mlxvs.nn_descent)` and the others document every parameter.
+- Searching many times: use `CagraIndex`, or pass the same MLX array to `graph_search` each time. A NumPy array is
+  copied to the GPU on every call, and `graph_search` with `"cosine"` recomputes the row norms on every call;
+  `CagraIndex` stores the rows once, normalized.
 
 Data larger than memory: pass a `numpy.memmap`. The rows stay on disk; `all_neighbors` copies one cluster at a time
 to the GPU.
@@ -136,22 +148,51 @@ python bench/bench_search.py sift/sift_base.fvecs sift/sift_query.fvecs --degree
 
 ### Benchmarks
 
-SIFT1M (985,462 x 128, L2, 10,000 queries in one batch, recall@10), MacBook Pro M3 Pro (18-core GPU, 12-core CPU),
-on power. mlxVS 0.1.0; hnswlib 0.8 with `M=16`, `ef_construction=200` on all 12 cores.
+MacBook Pro M3 Pro (18-core GPU, 12-core CPU, 36 GB), on power. 10,000 queries in one batch, recall@10 scored from
+the true distances of the returned ids. mlxVS: `CagraIndex`, graph degree 32 pruned from 64. hnswlib 0.8: `M=16`,
+`ef_construction=200`, all 12 cores. Reproduce with `bench/bench_search.py`.
 
-| Index | Build | Search setting | Recall@10 | Queries/s |
+**SIFT1M** (985,462 x 128, L2)
+
+| Index | Build | Setting | Recall@10 | Queries/s |
 |---|---:|---|---:|---:|
-| mlxVS `cagra_build`, degree 32 (from 64) | 10.4 s | `itopk_size` 32 | 0.932 | 119,800 |
-| | | `itopk_size` 64 | 0.976 | 69,500 |
-| | | `itopk_size` 128 | 0.993 | 37,800 |
-| | | `itopk_size` 256 | 0.998 | 27,000 |
-| mlxVS `cagra_build`, degree 64 (from 128) | 19.6 s | `itopk_size` 32 | 0.977 | 79,500 |
-| | | `itopk_size` 64 | 0.994 | 43,600 |
-| mlxVS `nn_descent` k-NN graph, degree 32 (unpruned) | 8.8 s | `itopk_size` 128 | 0.939 | 42,400 |
-| hnswlib (CPU) | 88.1 s | `ef` 32 | 0.904 | 53,300 |
-| | | `ef` 64 | 0.964 | 32,200 |
-| | | `ef` 128 | 0.990 | 17,600 |
-| | | `ef` 256 | 0.998 | 10,200 |
+| mlxVS, float32 | 10.8 s | `itopk_size` 32 | 0.932 | 134,900 |
+| | | `itopk_size` 64 | 0.976 | 76,400 |
+| | | `itopk_size` 128 | 0.993 | 46,200 |
+| | | `itopk_size` 256 | 0.998 | 26,700 |
+| mlxVS, float16 | 10.9 s | `itopk_size` 64 | 0.976 | 84,400 |
+| | | `itopk_size` 128 | 0.993 | 56,700 |
+| hnswlib (CPU) | 91.8 s | `ef` 32 | 0.903 | 50,100 |
+| | | `ef` 64 | 0.964 | 28,100 |
+| | | `ef` 128 | 0.990 | 15,000 |
+| | | `ef` 256 | 0.998 | 9,700 |
+
+**ada-002 1M** (982,790 x 1536 OpenAI embeddings, cosine)
+
+| Index | Build | Setting | Recall@10 | Queries/s |
+|---|---:|---|---:|---:|
+| mlxVS, float32 | 125 s | `itopk_size` 32 | 0.952 | 19,100 |
+| | | `itopk_size` 64 | 0.979 | 10,000 |
+| | | `itopk_size` 128 | 0.991 | 5,600 |
+| mlxVS, float16 | 121 s | `itopk_size` 64 | 0.975 | 12,800 |
+| | | `itopk_size` 128 | 0.987 | 7,000 |
+| hnswlib (CPU) | 732 s | `ef` 32 | 0.942 | 8,200 |
+| | | `ef` 64 | 0.974 | 5,100 |
+| | | `ef` 128 | 0.990 | 3,000 |
+
+**One query at a time** (SIFT1M, 1,000 queries each timed alone): the CPU wins this case. A single query is a short
+chain of dependent steps, which suits one fast CPU core; on the GPU it occupies one of 18 cores and pays MLX's launch
+overhead. A batch of 64 takes about as long as one query (1.1 ms).
+
+| Index | Setting | Recall@10 | Median latency | p95 |
+|---|---|---:|---:|---:|
+| mlxVS (GPU), batch of 1 | `itopk_size` 64 | 0.973 | 0.95 ms | 1.34 ms |
+| | `itopk_size` 128 | 0.992 | 1.69 ms | 1.97 ms |
+| hnswlib (CPU), 1 thread | `ef` 64 | 0.961 | 0.21 ms | 0.26 ms |
+| | `ef` 128 | 0.988 | 0.38 ms | 0.48 ms |
+
+So: build on the GPU (6 to 9x faster), search on the GPU when queries come in batches or from many users at once,
+and for one query at a time at low load, `save_hnswlib` and serve from the CPU.
 
 ## Coming from cuVS
 
@@ -174,9 +215,11 @@ on power. mlxVS 0.1.0; hnswlib 0.8 with `M=16`, `ef_construction=200` on all 12 
 
 ## Roadmap
 
-1. Vamana alpha pruning; export to HNSW (hnswlib) and JVector layouts (`cagra::serialize_to_hnswlib`).
-2. An index object holding the dataset and graph; float16 and int8 datasets for search.
-3. A C API for other languages (Java via Panama, as cuVS-java does).
+1. Export to JVector's layout; Vamana alpha pruning.
+2. Lower single-query latency: several threadgroups per query for small batches (CAGRA's multi-CTA search). One
+   query takes about 1 ms today (SIFT1M, recall 0.97); hnswlib on one CPU thread takes 0.2 ms.
+3. int8 datasets; filtered search.
+4. A C API for other languages (Java via Panama, as cuVS-java does).
 
 How the kernels work: [docs/DESIGN.md](docs/DESIGN.md). Building, testing and code style:
 [CONTRIBUTING.md](CONTRIBUTING.md).
