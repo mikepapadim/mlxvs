@@ -2,8 +2,9 @@
 
 """Graph search: recall@k against queries per second.
 
-Builds a k-NN graph of the base rows with mlxvs (nn_descent, or all_neighbors
-with --clusters), computes the exact neighbors of the queries with
+Builds a search graph of the base rows with mlxvs (cagra_build with
+--intermediate, else the k-NN graph of nn_descent, or all_neighbors with
+--clusters), computes the exact neighbors of the queries with
 brute_force_knn, then searches the graph with graph_search at several
 itopk_size values, all queries in one batch. Optionally the same sweep with
 hnswlib (HNSW on the CPU, all cores) at several ef values.
@@ -55,6 +56,12 @@ def main():
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--degree", type=int, default=32, help="graph degree")
     p.add_argument("--clusters", type=int, default=-1, help="all_neighbors clusters")
+    p.add_argument(
+        "--intermediate",
+        type=int,
+        default=0,
+        help="cagra_build with this intermediate_graph_degree (0: k-NN graph)",
+    )
     p.add_argument("--itopk", default="32,64,96,128,192,256")
     p.add_argument("--width", type=int, default=1, help="search_width")
     p.add_argument("--nq", type=int, default=0, help="queries used, 0: all")
@@ -76,7 +83,13 @@ def main():
     exact_dist = np.asarray(exact_dist)
 
     t0 = time.perf_counter()
-    if a.clusters >= 0:
+    if a.intermediate:
+        kw = {"n_clusters": a.clusters} if a.clusters >= 0 else {}
+        graph = mlxvs.cagra_build(
+            xb, a.degree, a.metric, intermediate_graph_degree=a.intermediate, **kw
+        )
+        how = f"cagra_build (intermediate degree {a.intermediate})"
+    elif a.clusters >= 0:
         graph, _ = mlxvs.all_neighbors(xb, a.degree, a.metric, n_clusters=a.clusters)
         how = f"all_neighbors (clusters {a.clusters or 'auto'})"
     else:

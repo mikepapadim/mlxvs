@@ -225,6 +225,53 @@ MLXVS_API Neighbors all_neighbors(
     const AllNeighborsOptions& options = {},
     mx::StreamOrDevice s = {});
 
+/** Options of cagra_build, named after cuVS's cagra::index_params. */
+struct CagraOptions {
+  /** Degree of the k-NN graph built first (at most 128 with NN-Descent). */
+  int intermediate_graph_degree = 64;
+
+  /** Degree of the pruned graph. */
+  int graph_degree = 32;
+
+  /** How the k-NN graph is built: all_neighbors's options. */
+  AllNeighborsOptions knn;
+};
+
+/**
+ * CAGRA's graph optimization: prunes knn_graph [n, K] (ids, nearest first, as
+ * nn_descent or all_neighbors return) to [n, graph_degree] for graph_search.
+ * Rank-based pruning keeps the edges with the fewest two-hop detours (an edge
+ * X -> Y has a detour through Z when Z comes before Y in X's list and Y before
+ * it in Z's), ties by rank; then the second half of each list takes reverse
+ * edges (Y -> X for kept X -> Y, by the edge's rank) not there yet, so that
+ * nodes with few incoming edges stay reachable. Needs no distances. A node
+ * receiving more than graph_degree reverse edges keeps the first that arrive,
+ * so the result can vary slightly between runs. Requires K <= 256. Runs on the
+ * GPU.
+ */
+MLXVS_API mx::array cagra_optimize(
+    const mx::array& knn_graph,
+    int graph_degree,
+    mx::StreamOrDevice s = {});
+
+/**
+ * A search graph of rows [n, d]: all_neighbors with intermediate_graph_degree
+ * neighbors, then cagra_optimize to graph_degree. Returns int32 [n,
+ * graph_degree] for graph_search.
+ */
+MLXVS_API mx::array cagra_build(
+    const mx::array& rows,
+    Metric metric,
+    const CagraOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/** cagra_build of rows left on the host, as all_neighbors(HostRows). */
+MLXVS_API mx::array cagra_build(
+    const HostRows& rows,
+    Metric metric,
+    const CagraOptions& options = {},
+    mx::StreamOrDevice s = {});
+
 /** Options of graph_search, named after cuVS's cagra::search_params. */
 struct SearchOptions {
   /**

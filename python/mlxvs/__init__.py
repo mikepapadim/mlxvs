@@ -22,6 +22,8 @@ __all__ = [
     "NearestNeighbors",
     "all_neighbors",
     "brute_force_knn",
+    "cagra_build",
+    "cagra_optimize",
     "graph_search",
     "kmeans_fit",
     "kmeans_predict",
@@ -93,6 +95,38 @@ def nn_descent(rows, k, metric=Metric.l2, **kwargs):
     return _core.nn_descent(_array(rows), k, _metric(metric), **kwargs)
 
 
+@functools.wraps(_core.cagra_optimize)
+def cagra_optimize(knn_graph, graph_degree, **kwargs):
+    return _core.cagra_optimize(_array(knn_graph), graph_degree, **kwargs)
+
+
+def cagra_build(
+    rows, graph_degree=32, metric=Metric.l2, *, intermediate_graph_degree=64, **kwargs
+):
+    """A search graph of the rows, as cuVS's ``cagra.build``.
+
+    The k-NN graph of the rows (``all_neighbors`` with
+    ``intermediate_graph_degree`` neighbors; its keyword arguments, such as
+    ``algo``, ``n_clusters`` or ``verbose``, pass through), pruned to
+    ``graph_degree`` by ``cagra_optimize``. Rows may be a NumPy array or
+    ``numpy.memmap`` larger than memory, as for ``all_neighbors``.
+
+    Args:
+        rows (array): Rows ``[n, d]``, any real dtype.
+        graph_degree (int): Degree of the search graph.
+        metric (Metric): ``inner_product``, ``l2`` or ``cosine``.
+        intermediate_graph_degree (int): Degree of the k-NN graph pruned
+          (at most 128 with NN-Descent).
+
+    Returns:
+        array: ``int32 [n, graph_degree]``, the ``graph`` of ``graph_search``.
+    """
+    if graph_degree > intermediate_graph_degree:
+        raise ValueError("graph_degree must be at most intermediate_graph_degree")
+    knn, _ = all_neighbors(rows, intermediate_graph_degree, metric, **kwargs)
+    return cagra_optimize(knn, graph_degree)
+
+
 @functools.wraps(_core.graph_search)
 def graph_search(base, graph, queries, k, metric=Metric.l2, **kwargs):
     return _core.graph_search(
@@ -116,5 +150,6 @@ for _f in (
     nn_descent,
     all_neighbors,
     graph_search,
+    cagra_optimize,
 ):
     _f.__module__ = __name__

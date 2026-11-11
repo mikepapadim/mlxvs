@@ -348,3 +348,30 @@ def test_graph_search_numpy_graph_and_errors():
         mlxvs.graph_search(x, graph, x[:5], 5, search_width=64)
     with pytest.raises(ValueError):
         mlxvs.graph_search(x, graph, x[:5], 300)
+
+
+def test_cagra_build_searches_better_than_knn_graph():
+    rng = np.random.default_rng(5)
+    z = rng.standard_normal((10500, 12)).astype(np.float32)
+    x = z @ rng.standard_normal((12, 48)).astype(np.float32)
+    x += 0.05 * rng.standard_normal(x.shape).astype(np.float32)
+    base, queries = x[:10000], x[10000:]
+    graph = mlxvs.cagra_build(base, 16, intermediate_graph_degree=48)
+    g = np.asarray(graph)
+    assert g.shape == (10000, 16) and g.dtype == np.int32
+    assert (g >= 0).all() and (g != np.arange(10000)[:, None]).all()
+    assert all(len(set(row)) == 16 for row in g)
+    knn, _ = mlxvs.nn_descent(base, 16)
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10)
+    exact = np.asarray(exact)
+
+    def recall(gr):
+        ids, _ = mlxvs.graph_search(base, gr, queries, 10, itopk_size=32)
+        ids = np.asarray(ids)
+        return np.mean([len(set(a) & set(b)) / 10 for a, b in zip(ids, exact)])
+
+    assert recall(graph) > recall(knn)
+    with pytest.raises(ValueError):
+        mlxvs.cagra_build(base, 64, intermediate_graph_degree=32)
+    with pytest.raises(ValueError):
+        mlxvs.cagra_optimize(knn, 17)

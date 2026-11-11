@@ -184,6 +184,34 @@ NB_MODULE(_core, m) {
       )");
 
   m.def(
+      "cagra_optimize",
+      [](const mx::array& knn_graph, int graph_degree, mx::StreamOrDevice s) {
+        return mlxvs::cagra_optimize(knn_graph, graph_degree, s);
+      },
+      "knn_graph"_a,
+      "graph_degree"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      R"(
+        Prunes a k-NN graph into a search graph, as CAGRA's ``optimize``.
+
+        Rank-based pruning keeps the edges with the fewest two-hop detours
+        (an edge X -> Y has a detour through Z when Z comes before Y in X's
+        list and Y before it in Z's), ties by rank; then the second half of
+        each list takes reverse edges not there yet, so that nodes with few
+        incoming edges stay reachable. Needs only the ids.
+
+        Args:
+            knn_graph (array): Neighbor ids ``[n, K]``, nearest first, as
+              ``nn_descent`` or ``all_neighbors`` return; ``K <= 256``.
+            graph_degree (int): Degree of the result, at most ``K``.
+            stream (Stream, optional): Stream or device. GPU only.
+
+        Returns:
+            array: ``int32 [n, graph_degree]`` for ``graph_search``.
+      )");
+
+  m.def(
       "graph_search",
       [](const mx::array& base,
          const mx::array& graph,

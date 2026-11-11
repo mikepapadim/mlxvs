@@ -9,6 +9,8 @@
 - `all_neighbors`: k-NN graph in overlapping k-means clusters, NN-Descent or exact per cluster.
 - Out-of-core `all_neighbors`: host arrays and `numpy.memmap` files larger than memory are read a cluster at a
   time; `n_clusters = 0` (default) sizes the clusters from the GPU's memory, oversized clusters are clustered again.
+- `cagra_optimize`, `cagra_build`: CAGRA's graph optimization (rank-based pruning by two-hop detours, reverse
+  edges) on the GPU; `cagra_build` prunes an `all_neighbors` graph, rows on the host included.
 - `graph_search`: approximate k-NN of queries over any fixed-degree graph, CAGRA's single-CTA search (one
   threadgroup per query, hashed visited set in threadgroup memory, bitonic sort and merge-path merge).
 - `NearestNeighbors`: scikit-learn style `fit` / `kneighbors` returning NumPy arrays.

@@ -44,3 +44,10 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   full it is cleared and refilled with the list's nodes, as CAGRA's small-hash mode. The search ends when every list
   entry is expanded. Everything stays within 16 KB of threadgroup memory where it can: Metal allows 32 KB, but its
   shader validation (run in CI) keeps a shadow copy and counts every byte twice.
+- `cagra_optimize`: three kernels. Prune: one threadgroup per node X loads N(X) into a threadgroup id -> rank table,
+  then for every pair (i, r) reads Y = N(N(X)[i])[r] and, if Y is in N(X) at rank j > max(i, r), counts a detour
+  of the edge X -> Y; each edge's place in the output is the number of edges with fewer detours (or as many and a
+  lower rank). Reverse: one thread per kept edge X -> Y appends (rank, X) to Y's list with an atomic counter (up to
+  `graph_degree` per node; a custom kernel's outputs are fresh arrays, so this is one launch over all edges). Merge:
+  one thread per node keeps the first half of its pruned list, adds its reverse edges in (rank, source) order that
+  are not there yet, then the rest of the pruned list.
