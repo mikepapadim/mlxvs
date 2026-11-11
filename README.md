@@ -152,6 +152,8 @@ MacBook Pro M3 Pro (18-core GPU, 12-core CPU, 36 GB), on power. 10,000 queries i
 the true distances of the returned ids. mlxVS: `CagraIndex`, graph degree 32 pruned from 64. hnswlib 0.8: `M=16`,
 `ef_construction=200`, all 12 cores. Reproduce with `bench/bench_search.py`.
 
+![Queries per second against recall@10 on SIFT1M and ada-002 1M: mlxVS (float32 and float16, GPU) above hnswlib (12 CPU cores) on both datasets](https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/bench-light.png)
+
 **SIFT1M** (985,462 x 128, L2)
 
 | Index | Build | Setting | Recall@10 | Queries/s |
