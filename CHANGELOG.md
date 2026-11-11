@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-11)
 
 - `brute_force_knn`: exact k-NN, tiled matrix multiply and a fused top-k kernel; queries taken in blocks, so a
   step's score matrix stays near 1 GB even for an exact k-NN graph (queries = base).

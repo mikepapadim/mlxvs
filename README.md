@@ -17,6 +17,11 @@ graph = mlxvs.cagra_build(vectors, graph_degree=32)              # 1M x 128 in ~
 ids, dist = mlxvs.graph_search(vectors, graph, queries, k=10)    # ~70k queries/s at 97.6% recall
 ```
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/sift1m-dark.png">
+  <img alt="SIFT1M on a MacBook Pro M3 Pro: queries per second against recall@10. mlxVS CAGRA degree 32 (built in 10.4 s) reaches 69,500 queries/s at 0.976 recall; hnswlib on 12 CPU cores (built in 88.1 s) reaches 32,200 at 0.964. Numbers in the Benchmarks table." src="docs/img/sift1m-light.png" width="720">
+</picture>
+
 Use it for approximate nearest-neighbor search, for the k-NN graph behind UMAP, t-SNE, clustering and
 deduplication, for exact k-NN ground truth, or as the build step of a graph index (HNSW, Vamana, CAGRA).
 
@@ -41,11 +46,16 @@ Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: Vamana pruning a
 Needs an Apple-silicon Mac on macOS 14 or later (as MLX) and Python 3.10+.
 
 ```bash
-pip install git+https://github.com/mikepapadim/mlxvs
+pip install mlxvs
 ```
 
-pip builds the extension against your `mlx` wheel; that needs the Xcode Command Line Tools
-(`xcode-select --install`) and takes about a minute.
+Wheels for Python 3.10 to 3.14 on Apple silicon, built against the `mlx` release they pin (MLX has no stable C++
+ABI). The latest code from GitHub builds the extension against your `mlx` wheel; that needs the Xcode Command Line
+Tools (`xcode-select --install`) and takes about a minute:
+
+```bash
+pip install git+https://github.com/mikepapadim/mlxvs
+```
 
 ## 2. Use
 
