@@ -27,7 +27,7 @@ endif()
 find_package(MLX CONFIG REQUIRED)
 
 add_library(mlxvs STATIC src/knn.cpp src/kmeans.cpp src/nndescent.cpp
-                         src/all_neighbors.cpp)
+                         src/all_neighbors.cpp src/search.cpp)
 target_include_directories(mlxvs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(mlxvs PUBLIC mlx)
 
@@ -43,7 +43,10 @@ if(MLXVS_BUILD_TESTS)
   enable_testing()
   add_test(NAME test_knn COMMAND test_knn)
   add_test(NAME test_nnd COMMAND test_nnd)
+  add_executable(test_search tests/test_search.cpp)
+  target_link_libraries(test_search PRIVATE mlxvs)
   add_test(NAME test_all_neighbors COMMAND test_all_neighbors)
+  add_test(NAME test_search COMMAND test_search)
 endif()
 
 if(MLXVS_BUILD_PYTHON)

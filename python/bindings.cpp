@@ -183,6 +183,72 @@ NB_MODULE(_core, m) {
             found) and distances ``float32 [n, k]``, as ``brute_force_knn``.
       )");
 
+  m.def(
+      "graph_search",
+      [](const mx::array& base,
+         const mx::array& graph,
+         const mx::array& queries,
+         int k,
+         mlxvs::Metric metric,
+         int itopk_size,
+         int search_width,
+         int max_iterations,
+         int num_random_samplings,
+         unsigned long long seed,
+         mx::StreamOrDevice s) {
+        mlxvs::SearchOptions options;
+        options.itopk_size = itopk_size;
+        options.search_width = search_width;
+        options.max_iterations = max_iterations;
+        options.num_random_samplings = num_random_samplings;
+        options.seed = seed;
+        auto r =
+            mlxvs::graph_search(base, graph, queries, k, metric, options, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "base"_a,
+      "graph"_a,
+      "queries"_a,
+      "k"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "itopk_size"_a = 64,
+      "search_width"_a = 1,
+      "max_iterations"_a = 0,
+      "num_random_samplings"_a = 1,
+      "seed"_a = 0x128394,
+      "stream"_a = nb::none(),
+      R"(
+        Approximate k-nearest neighbors of every query by searching a graph.
+
+        CAGRA's single-CTA search: one threadgroup per query keeps a sorted
+        list of ``itopk_size`` nodes, starts from random nodes and expands the
+        best unexpanded ones (``search_width`` per round) until every node of
+        the list has been expanded. Parameters follow cuVS's
+        ``cagra.SearchParams``. Any fixed-degree graph works: the k-NN graph of
+        ``nn_descent`` or ``all_neighbors``, or a pruned one.
+
+        Args:
+            base (array): Base rows ``[n, d]``, any real dtype.
+            graph (array): Neighbor ids of every base row ``[n, degree]``,
+              integers; -1 entries are skipped.
+            queries (array): Query rows ``[nq, d]``, any real dtype.
+            k (int): Neighbors per query, at most ``itopk_size``.
+            metric (Metric): ``inner_product``, ``l2`` (squared) or ``cosine``.
+            itopk_size (int): Length of the internal list (rounded up to a
+              multiple of 32, at most 256). Longer: higher recall, slower.
+            search_width (int): Nodes expanded per round;
+              ``search_width * degree <= 512``.
+            max_iterations (int): The most rounds; 0: automatic.
+            num_random_samplings (int): Rounds of random start nodes.
+            seed (int): Seed of the random start nodes.
+            stream (Stream, optional): Stream or device. GPU only.
+
+        Returns:
+            tuple(array, array): ids ``int32 [nq, k]`` (-1 where fewer were
+            found) and distances ``float32 [nq, k]``, as ``brute_force_knn``.
+      )");
+
   auto all_neighbors_options = [](mlxvs::GraphBuild algo,
                                   int n_clusters,
                                   int overlap_factor,

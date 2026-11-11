@@ -1,15 +1,23 @@
-# mlxvs
+# mlxVS
+
+**cuVS for your Mac: GPU vector search on Apple silicon.**
 
 [![CI](https://github.com/mikepapadim/mlxvs/actions/workflows/ci.yml/badge.svg)](https://github.com/mikepapadim/mlxvs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-GPU k-nearest-neighbor search and k-NN graph construction for Apple silicon, built on
-[MLX](https://github.com/ml-explore/mlx). The same operations and parameter names as NVIDIA
-[cuVS](https://github.com/rapidsai/cuvs), on the Mac's GPU: exact k-NN, k-means, NN-Descent and batched
-all-neighbors graphs. It takes NumPy arrays or MLX arrays and runs on any M-series Mac.
+A k-NN graph of a million vectors in about 9 seconds, then 40,000 queries per second at 94% recall, on a MacBook
+Pro's GPU. mlxVS brings the operations and parameter names of NVIDIA [cuVS](https://github.com/rapidsai/cuvs) to
+the Mac, built on [MLX](https://github.com/ml-explore/mlx): exact k-NN, k-means, NN-Descent, batched all-neighbors
+graphs and CAGRA-style graph search. NumPy or MLX arrays in, any M-series Mac.
 
-Use it for the k-NN graph behind UMAP, t-SNE, clustering and deduplication, for exact k-NN ground truth, or as the
-build step of a graph index (HNSW, Vamana, CAGRA).
+```python
+import mlxvs
+graph, _ = mlxvs.nn_descent(vectors, k=32)                       # build: 1M x 128 in ~9 s
+ids, dist = mlxvs.graph_search(vectors, graph, queries, k=10)    # search: ~40k queries/s
+```
+
+Use it for the k-NN graph behind UMAP, t-SNE, clustering and deduplication, for exact k-NN ground truth, for
+approximate search over a graph, or as the build step of a graph index (HNSW, Vamana, CAGRA).
 
 ## What's in it
 
@@ -19,10 +27,11 @@ build step of a graph index (HNSW, Vamana, CAGRA).
 | `kmeans_fit(x, clusters)`, `kmeans_predict(x, centroids, m)` | k-means++ and Lloyd; the `m` nearest centroids per row | `cluster::kmeans` |
 | `nn_descent(rows, k)` | Approximate k-NN graph of the rows, FP16 SIMD-group joins | `nn_descent::build` |
 | `all_neighbors(rows, k)` | k-NN graph built in overlapping k-means clusters, one on the GPU at a time; reads a NumPy array or memory-mapped file larger than memory where it is | `all_neighbors::build` |
+| `graph_search(base, graph, queries, k)` | Approximate k-NN of queries by beam search of a graph, one threadgroup per query (CAGRA's single-CTA search) | `cagra::search` |
 | `NearestNeighbors(n_neighbors).fit(X).kneighbors(Q)` | scikit-learn's interface over the above, NumPy in and out | |
 
-Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: graph pruning (CAGRA, Vamana) and graph search;
-see [Roadmap](#roadmap).
+Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: graph pruning (CAGRA, Vamana); see
+[Roadmap](#roadmap).
 
 ## 1. Install
 
@@ -52,6 +61,9 @@ graph, graph_dist = mlxvs.nn_descent(base, k=32, metric="cosine")
 
 # the same graph in overlapping k-means clusters, as many as the GPU's memory asks for
 graph, graph_dist = mlxvs.all_neighbors(base, k=32, metric="cosine")
+
+# approximate k-NN of the queries by searching the graph; itopk_size trades speed for recall
+ids, dist = mlxvs.graph_search(base, graph, queries, k=10, metric="cosine", itopk_size=128)
 
 graph = np.asarray(graph)  # results are mlx arrays; np.asarray converts without a copy
 ```
@@ -98,6 +110,14 @@ python bench/bench_graph.py sift/sift_base.fvecs --k 32 --clusters 1,8 --baselin
 
 It builds the k-NN graph with each method and scores 2,000 random rows against the exact neighbors.
 
+Search: build a graph, then recall@10 against queries per second over a sweep of `itopk_size`, optionally against
+hnswlib on the CPU.
+
+```bash
+pip install hnswlib   # optional CPU baseline
+python bench/bench_search.py sift/sift_base.fvecs sift/sift_query.fvecs --degree 32 --baselines hnswlib
+```
+
 ## Coming from cuVS
 
 | mlxvs | cuVS | Note |
@@ -109,13 +129,17 @@ It builds the k-NN graph with each method and scores 2,000 random rows against t
 | `all_neighbors(..., n_clusters, overlap_factor)` | `all_neighbors::index_params::{n_clusters, overlap_factor}` | overlap 2 as cuVS; `n_clusters` defaults to 0 (chosen from the GPU's memory), cuVS's to 1 |
 | `algo="brute_force"` / `"nn_descent"` | `all_neighbors::index_params::graph_build_params` | cuVS also offers IVF-PQ |
 | `"cosine"` returns the cosine similarity | `CosineExpanded` returns 1 - cosine | similarities are "larger is closer"; `"l2"` is squared, as `L2Expanded` |
+| `graph_search(base, graph, queries, k, ...)` | `cagra::search` | takes the dataset and graph directly, no index object yet |
+| `itopk_size` = 64, `search_width` = 1 | `search_params::{itopk_size, search_width}` | same defaults; `itopk_size` at most 256 |
+| `max_iterations` = 0 (automatic) | `search_params::max_iterations` | stops earlier once every list entry is expanded |
+| `num_random_samplings` = 1 | `search_params::num_random_samplings` | random start nodes; no seed nodes yet |
 | `int32` ids | `int64_t` ids | n < 2^31 rows |
 
 ## Roadmap
 
 1. Graph pruning: CAGRA rank-based and Vamana alpha pruning, export to HNSW and JVector layouts (`cagra::build`).
-2. Graph search (`cagra::search`).
-3. Wheels on PyPI; a C API for other languages (Java via Panama, as cuVS-java does).
+2. An index object holding the dataset and graph; float16 and int8 datasets for search.
+3. A C API for other languages (Java via Panama, as cuVS-java does).
 
 How the kernels work: [docs/DESIGN.md](docs/DESIGN.md). Building, testing and code style:
 [CONTRIBUTING.md](CONTRIBUTING.md).

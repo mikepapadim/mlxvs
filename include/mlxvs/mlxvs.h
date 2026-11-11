@@ -225,6 +225,46 @@ MLXVS_API Neighbors all_neighbors(
     const AllNeighborsOptions& options = {},
     mx::StreamOrDevice s = {});
 
+/** Options of graph_search, named after cuVS's cagra::search_params. */
+struct SearchOptions {
+  /**
+   * Length of each query's internal sorted list (rounded up to a multiple of
+   * 32, at least k, at most 256). Longer: higher recall, slower.
+   */
+  int itopk_size = 64;
+
+  /** Nodes expanded per round. search_width * graph degree <= 512. */
+  int search_width = 1;
+
+  /** The most rounds; 0: 2 * itopk_size / search_width + 16. */
+  int max_iterations = 0;
+
+  /** Rounds of random start nodes (each as many as one round's neighbors). */
+  int num_random_samplings = 1;
+
+  unsigned long long seed = 0x128394;
+};
+
+/**
+ * Approximate k-nearest neighbors of every row of queries [nq, d] among the
+ * rows of base [n, d] by a greedy search of graph [n, degree] (the neighbor ids
+ * of every base row; -1 entries are skipped), as CAGRA's single-CTA search: one
+ * threadgroup per query keeps a sorted list of itopk_size nodes, starts from
+ * random nodes and repeatedly expands the best unexpanded ones until all are
+ * expanded. Works on any fixed-degree graph: nn_descent's or all_neighbors's
+ * k-NN graph, or a pruned one. Returns ids and distances as brute_force_knn.
+ * For Cosine, the base row norms are computed on every call; normalized rows
+ * with InnerProduct avoid that. Runs on the GPU.
+ */
+MLXVS_API Neighbors graph_search(
+    const mx::array& base,
+    const mx::array& graph,
+    const mx::array& queries,
+    int k,
+    Metric metric,
+    const SearchOptions& options = {},
+    mx::StreamOrDevice s = {});
+
 /**
  * One merge step of brute_force_knn, exposed for tests and benchmarks: the best
  * k of each row of scores [nq, t] (ids id_offset + column) together with the

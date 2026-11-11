@@ -316,3 +316,35 @@ def test_all_neighbors_memmap_out_of_core(tmp_path):
     a, _ = mlxvs.all_neighbors(view, 4, "l2", algo="brute_force")
     b, _ = mlxvs.all_neighbors(np.ascontiguousarray(view), 4, "l2", algo="brute_force")
     assert (np.array(a) == np.array(b)).mean() > 0.999
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine", "inner_product"])
+def test_graph_search_recall(metric):
+    rng = np.random.default_rng(3)
+    z = rng.standard_normal((8200, 8)).astype(np.float32)
+    x = z @ rng.standard_normal((8, 32)).astype(np.float32)
+    x += 0.05 * rng.standard_normal(x.shape).astype(np.float32)
+    base, queries = x[:8000], x[8000:]
+    graph, _ = mlxvs.all_neighbors(base, 24, metric, algo="brute_force", n_clusters=1)
+    ids, dist = mlxvs.graph_search(base, graph, queries, 10, metric)
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
+    ids, exact = np.asarray(ids), np.asarray(exact)
+    recall = np.mean([len(set(a) & set(b)) / 10 for a, b in zip(ids, exact)])
+    assert recall > 0.95
+    dist = np.asarray(dist)
+    assert np.all(
+        np.diff(dist, axis=1) >= 0 if metric == "l2" else np.diff(dist, axis=1) <= 0
+    )
+
+
+def test_graph_search_numpy_graph_and_errors():
+    x = np.random.default_rng(0).standard_normal((500, 16)).astype(np.float32)
+    graph = np.asarray(mlxvs.nn_descent(x, 16)[0]).astype(np.int64)
+    ids, _ = mlxvs.graph_search(x, graph, x[:20], 5, itopk_size=32, search_width=2)
+    assert np.asarray(ids)[:, 0].tolist() == list(range(20))
+    with pytest.raises(ValueError):
+        mlxvs.graph_search(x, graph[:100], x[:5], 5)
+    with pytest.raises(ValueError):
+        mlxvs.graph_search(x, graph, x[:5], 5, search_width=64)
+    with pytest.raises(ValueError):
+        mlxvs.graph_search(x, graph, x[:5], 300)

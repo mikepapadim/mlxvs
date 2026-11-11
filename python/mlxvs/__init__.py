@@ -22,6 +22,7 @@ __all__ = [
     "NearestNeighbors",
     "all_neighbors",
     "brute_force_knn",
+    "graph_search",
     "kmeans_fit",
     "kmeans_predict",
     "nn_descent",
@@ -92,6 +93,13 @@ def nn_descent(rows, k, metric=Metric.l2, **kwargs):
     return _core.nn_descent(_array(rows), k, _metric(metric), **kwargs)
 
 
+@functools.wraps(_core.graph_search)
+def graph_search(base, graph, queries, k, metric=Metric.l2, **kwargs):
+    return _core.graph_search(
+        _array(base), _array(graph), _array(queries), k, _metric(metric), **kwargs
+    )
+
+
 @functools.wraps(_core.all_neighbors)
 def all_neighbors(rows, k, metric=Metric.l2, **kwargs):
     if "algo" in kwargs:
@@ -101,5 +109,12 @@ def all_neighbors(rows, k, metric=Metric.l2, **kwargs):
     return _core.all_neighbors(_array(rows), k, _metric(metric), **kwargs)
 
 
-for _f in (brute_force_knn, kmeans_fit, kmeans_predict, nn_descent, all_neighbors):
+for _f in (
+    brute_force_knn,
+    kmeans_fit,
+    kmeans_predict,
+    nn_descent,
+    all_neighbors,
+    graph_search,
+):
     _f.__module__ = __name__

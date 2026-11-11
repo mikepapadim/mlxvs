@@ -45,11 +45,12 @@ jobs:
           python -m pip install pytest
           python -m pytest -q python/tests
       - name: README example
-        # the Python example in README.md, as written
+        # the Python example of README.md's "Use" section, as written
         run: |
           python - <<'PY'
           import re
-          code = re.findall(r"```python\n(.*?)```", open("README.md").read(), re.S)[0]
+          blocks = re.findall(r"```python\n(.*?)```", open("README.md").read(), re.S)
+          code = next(b for b in blocks if b.startswith("import numpy"))
           exec(compile(code, "README.md", "exec"))
           PY
       - name: Ruff

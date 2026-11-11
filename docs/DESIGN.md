@@ -34,3 +34,13 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   the average to be two thirds of that cap, since k-means clusters are uneven. A cluster still over the cap is
   clustered again (its rows join the 2 nearest sub-clusters) rather than filled to a capacity by sending rows to
   farther clusters, which separates those rows from their neighbors.
+- `graph_search`: CAGRA's single-CTA search, one threadgroup of 256 threads per query. Its state lives in threadgroup
+  memory: a sorted list of `itopk_size` entries (two halves, merged from one into the other), one round's candidates,
+  the query when `d <= 1024`, and a visited set (open addressing over atomic ints). After a random start, each round
+  marks the best unexpanded list entries as expanded (an id stored as `-(id + 2)`), gathers their graph neighbors,
+  keeps the ones it inserts into the visited set (so no node is scored twice in a round, nor one in the list), scores
+  them one SIMD group per candidate, sorts them (bitonic) and merges them into the list: each entry's place is its
+  index plus the number of entries of the other list before it, found by binary search. When the visited set is half
+  full it is cleared and refilled with the list's nodes, as CAGRA's small-hash mode. The search ends when every list
+  entry is expanded. Everything stays within 16 KB of threadgroup memory where it can: Metal allows 32 KB, but its
+  shader validation (run in CI) keeps a shadow copy and counts every byte twice.
