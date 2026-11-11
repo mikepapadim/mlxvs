@@ -17,6 +17,7 @@ from mlxvs import _core
 from mlxvs._core import GraphBuild, Metric
 
 __all__ = [
+    "CagraIndex",
     "GraphBuild",
     "Metric",
     "NearestNeighbors",
@@ -29,7 +30,7 @@ __all__ = [
     "kmeans_predict",
     "nn_descent",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def __getattr__(name):
@@ -44,6 +45,12 @@ def __getattr__(name):
 def _array(x):
     if isinstance(x, mx.array):
         return x
+    if type(x).__module__ == "numpy" and not x.flags.c_contiguous:
+        # MLX keeps a NumPy array's strides; a kernel would then make the rows
+        # contiguous again on every call
+        import numpy as np
+
+        x = np.ascontiguousarray(x)
     try:
         return mx.array(x)
     except (TypeError, ValueError):
@@ -153,3 +160,7 @@ for _f in (
     cagra_optimize,
 ):
     _f.__module__ = __name__
+
+from mlxvs._index import CagraIndex
+
+CagraIndex.__module__ = __name__

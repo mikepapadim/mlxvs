@@ -300,8 +300,10 @@ struct SearchOptions {
  * random nodes and repeatedly expands the best unexpanded ones until all are
  * expanded. Works on any fixed-degree graph: nn_descent's or all_neighbors's
  * k-NN graph, or a pruned one. Returns ids and distances as brute_force_knn.
- * For Cosine, the base row norms are computed on every call; normalized rows
- * with InnerProduct avoid that. Runs on the GPU.
+ * base may be float16 (read as is: half the memory traffic) or any real dtype
+ * (converted to float32 on every call). For Cosine, the base row norms are
+ * computed on every call; normalized rows with InnerProduct avoid that. Runs on
+ * the GPU.
  */
 MLXVS_API Neighbors graph_search(
     const mx::array& base,

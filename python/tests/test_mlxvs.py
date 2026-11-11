@@ -375,3 +375,80 @@ def test_cagra_build_searches_better_than_knn_graph():
         mlxvs.cagra_build(base, 64, intermediate_graph_degree=32)
     with pytest.raises(ValueError):
         mlxvs.cagra_optimize(knn, 17)
+
+
+def _low_rank(n, d=48, r=12, seed=9):
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n, r)).astype(np.float32)
+    x = x @ rng.standard_normal((r, d)).astype(np.float32)
+    return x + 0.05 * rng.standard_normal(x.shape).astype(np.float32)
+
+
+def _recall(ids, exact):
+    ids, exact = np.asarray(ids), np.asarray(exact)
+    return np.mean([len(set(a) & set(b)) / exact.shape[1] for a, b in zip(ids, exact)])
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine", "inner_product"])
+@pytest.mark.parametrize("dtype", ["float32", "float16"])
+def test_cagra_index_build_search(metric, dtype):
+    x = _low_rank(8300)
+    base, queries = x[:8000], x[8000:]
+    index = mlxvs.CagraIndex.build(base, 24, metric, dtype=dtype)
+    assert len(index) == 8000 and index.dim == 48 and index.graph_degree == 24
+    assert index.metric == metric and index.dtype == getattr(mx, dtype)
+    ids, dist = index.search(queries, k=10)
+    exact, exact_dist = mlxvs.brute_force_knn(base, queries, 10, metric)
+    assert _recall(ids, exact) > (0.95 if dtype == "float32" else 0.9)
+    if dtype == "float32":
+        # the same distances as exact search (cosine: similarities of unit rows)
+        d0, e0 = np.asarray(dist)[:, 0], np.asarray(exact_dist)[:, 0]
+        hit = np.asarray(ids)[:, 0] == np.asarray(exact)[:, 0]
+        assert np.allclose(d0[hit], e0[hit], rtol=1e-4, atol=1e-4)
+
+
+def test_cagra_index_save_load(tmp_path):
+    x = _low_rank(3000)
+    index = mlxvs.CagraIndex.build(x, 16, "cosine", dtype="float16")
+    path = tmp_path / "index.safetensors"
+    index.save(path)
+    loaded = mlxvs.CagraIndex.load(path)
+    assert repr(loaded) == repr(index)
+    a = np.asarray(index.search(x[:50], k=5, seed=7)[0])
+    b = np.asarray(loaded.search(x[:50], k=5, seed=7)[0])
+    assert (a == b).all()
+    with pytest.raises(ValueError):
+        index.save(tmp_path / "index.bin")
+    mx.save_safetensors(str(tmp_path / "other.safetensors"), {"a": mx.zeros((2,))})
+    with pytest.raises(ValueError):
+        mlxvs.CagraIndex.load(tmp_path / "other.safetensors")
+
+
+def test_cagra_index_inputs():
+    x = _low_rank(2000)
+    strided = np.concatenate([x, x], axis=1)[:, :48]  # a non-contiguous view
+    assert not strided.flags.c_contiguous
+    index = mlxvs.CagraIndex.build(strided, 16)
+    ids, _ = index.search(strided[0], k=3)  # one query as a 1-D row
+    assert np.asarray(ids).shape == (1, 3) and np.asarray(ids)[0, 0] == 0
+    with pytest.raises(ValueError):
+        mlxvs.CagraIndex.build(x, 16, dtype="int8")
+
+
+@pytest.mark.parametrize(
+    "metric,space", [("l2", "l2"), ("cosine", "cosine"), ("inner_product", "ip")]
+)
+def test_cagra_index_save_hnswlib(tmp_path, metric, space):
+    hnswlib = pytest.importorskip("hnswlib")
+    x = _low_rank(6200)
+    base, queries = x[:6000], x[6000:]
+    index = mlxvs.CagraIndex.build(base, 24, metric, dtype="float16")
+    path = str(tmp_path / "index.hnsw")
+    index.save_hnswlib(path)
+    p = hnswlib.Index(space=space, dim=index.dim)
+    p.load_index(path)
+    assert p.get_current_count() == 6000 and p.element_count == 6000
+    p.set_ef(64)
+    labels, _ = p.knn_query(queries, k=10)
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
+    assert _recall(labels, exact) > 0.9

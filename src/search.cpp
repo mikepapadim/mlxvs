@@ -50,7 +50,11 @@ Neighbors graph_search(
     mx::StreamOrDevice s) {
   const char* op = "mlxvs::graph_search";
   mx::StreamContext context(detail::gpu_stream(s, op));
-  auto base = detail::float_rows(base_in, op, "base");
+  // float16 rows are read as they are (half the memory traffic); other dtypes
+  // are converted to float32
+  auto base = base_in.ndim() == 2 && base_in.dtype() == mx::float16
+      ? base_in
+      : detail::float_rows(base_in, op, "base");
   auto queries = detail::float_rows(queries_in, op, "queries");
   if (graph_in.ndim() != 2 || graph_in.shape(0) != base.shape(0)) {
     throw std::invalid_argument(
@@ -119,8 +123,10 @@ Neighbors graph_search(
   if (metric == Metric::Cosine) {
     auto qn = mx::sqrt(mx::sum(mx::square(queries), 1, /*keepdims=*/true));
     queries = queries / mx::maximum(qn, mx::array(1e-30f));
-    inv_norm =
-        mx::rsqrt(mx::maximum(mx::sum(mx::square(base), 1), mx::array(1e-30f)));
+    inv_norm = mx::rsqrt(
+        mx::maximum(
+            mx::sum(mx::square(mx::astype(base, mx::float32)), 1),
+            mx::array(1e-30f)));
   }
   int metric_code = metric == Metric::InnerProduct ? 0
       : metric == Metric::L2                       ? 1
