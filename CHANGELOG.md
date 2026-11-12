@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0 (2026-11-12)
+
+- `IvfPqIndex` (C++ `ivf_pq_build`, `ivf_pq_search`, `ivf_pq_extend`), as cuVS's IVF-PQ: k-means lists, rows
+  stored as `pq_dim` codes of `pq_bits` (4 to 8) of their residual to the center, per-subspace codebooks, cuVS's
+  `pq_dim` heuristic (zero columns pad the dimension to a multiple of `pq_dim`). Searches build a float32 lookup
+  table per (query, list) in chunks of subspaces and sum it over each row's codes. SIFT1M: 63 MB of codes for
+  505 MB of rows, built in 21.7 s; with `refine_ratio=4` recall@10 0.954 at 18,300 queries/s (`n_probes` 20) and
+  0.993 at 8,100 (50), as IVF-Flat's.
+- `refine` (C++ and Python), as cuVS's: exact re-ranking of candidate ids. From Python the rows may be a NumPy
+  array or `numpy.memmap`: only the candidates' rows are read, on the host.
+
 ## 0.10.0 (2026-11-12)
 
 - `CagraIndex.extend` (C++ `cagra_extend`), as cuVS's `cagra::extend`: each new row's `2 * degree` nearest rows

@@ -524,6 +524,87 @@ MLXVS_API IvfFlatIndex ivf_flat_extend(
     const std::optional<mx::array>& new_ids = std::nullopt,
     mx::StreamOrDevice s = {});
 
+/** An IVF-PQ index: rows in the lists of their nearest k-means center,
+ * stored as product-quantization codes of their residual to that center, as
+ * cuVS's ivf_pq::index. */
+struct IvfPqIndex {
+  /** The lists' centers, float32 [lists, rot_dim] (rot_dim: dim padded with
+   * zero columns to pq_dim * pq_len). */
+  mx::array centers;
+  /** A codebook per subspace, float32 [pq_dim, 2^pq_bits, pq_len]. */
+  mx::array codebooks;
+  /** Every row's codes, grouped by list, uint8 [n, pq_dim]. */
+  mx::array codes;
+  /** The id of each row of codes, int32 [n]. */
+  mx::array indices;
+  /** Where each list starts in codes, int32 [lists + 1]. */
+  mx::array offsets;
+  Metric metric;
+  /** The rows' dimension. */
+  int dim;
+};
+
+/** Options of ivf_pq_build, named after cuVS's ivf_pq::index_params. */
+struct IvfPqOptions {
+  int n_lists = 1024;
+  /** Subspaces each row is coded in; 0: cuVS's heuristic (half the dimension
+   * from 128 up, rounded down to a multiple of 32). */
+  int pq_dim = 0;
+  /** Bits per code, 4 to 8: codebooks of 2^pq_bits entries. */
+  int pq_bits = 8;
+  int kmeans_n_iters = 20;
+  double kmeans_trainset_fraction = 0.5;
+  unsigned long long seed = 42;
+};
+
+/**
+ * Builds an IVF-PQ index of rows [n, d] (any real dtype): k-means lists as
+ * IVF-Flat, then per-subspace k-means codebooks of the rows' residuals to
+ * their center; every row is stored as pq_dim codes of pq_bits. Ids are row
+ * numbers. Runs on the GPU.
+ */
+MLXVS_API IvfPqIndex ivf_pq_build(
+    const mx::array& rows,
+    Metric metric,
+    const IvfPqOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/**
+ * The k nearest rows of every query by approximate (PQ) distances, scanning
+ * the n_probes lists of nearest center with a float32 lookup table per (query,
+ * list), as cuVS. Distances are approximate; refine() recomputes them exactly
+ * from the rows. k <= 256. Runs on the GPU.
+ */
+MLXVS_API Neighbors ivf_pq_search(
+    const IvfPqIndex& index,
+    const mx::array& queries,
+    int k,
+    const IvfSearchOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/** The index with new_rows added to their lists and coded with its codebooks,
+ * as ivf_flat_extend. */
+MLXVS_API IvfPqIndex ivf_pq_extend(
+    const IvfPqIndex& index,
+    const mx::array& new_rows,
+    const std::optional<mx::array>& new_ids = std::nullopt,
+    mx::StreamOrDevice s = {});
+
+/**
+ * Exact re-ranking, as cuVS's refine: the k nearest of each query's
+ * candidates [nq, c] (ids into dataset [n, d]; -1 skipped), by exact
+ * distances, nearest first, as brute_force_knn returns them. Search an
+ * approximate index for more candidates than needed (c = 2k to 4k), then
+ * refine.
+ */
+MLXVS_API Neighbors refine(
+    const mx::array& dataset,
+    const mx::array& queries,
+    const mx::array& candidates,
+    int k,
+    Metric metric,
+    mx::StreamOrDevice s = {});
+
 /**
  * Writes a search index (the rows [n, d], any real dtype, and its graph [n,
  * degree] of ids, -1 skipped) in hnswlib's binary format, as cuVS's

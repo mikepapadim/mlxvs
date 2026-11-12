@@ -21,6 +21,7 @@ __all__ = [
     "CagraIndex",
     "GraphBuild",
     "IvfFlatIndex",
+    "IvfPqIndex",
     "Metric",
     "NearestNeighbors",
     "SearchAlgo",
@@ -32,10 +33,11 @@ __all__ = [
     "kmeans_fit",
     "kmeans_predict",
     "nn_descent",
+    "refine",
     "vamana_build",
     "vamana_prune",
 ]
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 
 def __getattr__(name):
@@ -232,7 +234,9 @@ for _f in (
     _f.__module__ = __name__
 
 from mlxvs._index import CagraIndex
-from mlxvs._ivf import IvfFlatIndex
+from mlxvs._ivf import IvfFlatIndex, IvfPqIndex, refine
 
 CagraIndex.__module__ = __name__
 IvfFlatIndex.__module__ = __name__
+IvfPqIndex.__module__ = __name__
+refine.__module__ = __name__

@@ -72,6 +72,11 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   the queries fit in 8 KB of threadgroup memory): one threadgroup per item loads the queries, and each thread
   reads rows of the list once, scoring them against every query of the item. `topk_merge` then keeps the best k
   of each buffer.
+- `ivf_pq_search`: one threadgroup per (probed list, query). The query's residual to the center (L2), or the query
+  (inner product, plus its dot product with the center), sits in threadgroup memory; the float32 lookup table is
+  built 8 subspaces at a time (256 codes: 8 KB) and every thread adds the entries of its rows' codes, keeping its
+  first 8 rows' sums in registers and the rest in the candidate buffer. The best k then go through `topk_merge` as
+  IVF-Flat's.
 - `vamana_prune`: JVector's `VamanaDiversityProvider.retainDiverse` on the GPU. Per chunk of nodes (gathered rows
   near 256 MB), the candidates' rows are gathered and two batched matrix multiplies give the node-candidate and
   candidate-candidate dot products, turned into JVector's similarities (1 / (1 + squared distance) from norms and

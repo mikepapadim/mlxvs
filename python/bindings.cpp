@@ -361,6 +361,137 @@ NB_MODULE(_core, m) {
       "Adds rows to an IVF-Flat index (IvfFlatIndex.extend calls it).");
 
   m.def(
+      "ivf_pq_build",
+      [](const mx::array& rows,
+         mlxvs::Metric metric,
+         int n_lists,
+         int pq_dim,
+         int pq_bits,
+         int kmeans_n_iters,
+         double kmeans_trainset_fraction,
+         unsigned long long seed,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfPqOptions o;
+        o.n_lists = n_lists;
+        o.pq_dim = pq_dim;
+        o.pq_bits = pq_bits;
+        o.kmeans_n_iters = kmeans_n_iters;
+        o.kmeans_trainset_fraction = kmeans_trainset_fraction;
+        o.seed = seed;
+        auto i = mlxvs::ivf_pq_build(rows, metric, o, s);
+        return nb::make_tuple(
+            i.centers, i.codebooks, i.codes, i.indices, i.offsets, i.dim);
+      },
+      "rows"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "n_lists"_a = 1024,
+      "pq_dim"_a = 0,
+      "pq_bits"_a = 8,
+      "kmeans_n_iters"_a = 20,
+      "kmeans_trainset_fraction"_a = 0.5,
+      "seed"_a = 42,
+      "stream"_a = nb::none(),
+      "Builds an IVF-PQ index; returns (centers, codebooks, codes, indices, "
+      "offsets, dim). IvfPqIndex.build calls it.");
+
+  m.def(
+      "ivf_pq_search",
+      [](const mx::array& centers,
+         const mx::array& codebooks,
+         const mx::array& codes,
+         const mx::array& indices,
+         const mx::array& offsets,
+         mlxvs::Metric metric,
+         int dim,
+         const mx::array& queries,
+         int k,
+         int n_probes,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfPqIndex i{
+            centers, codebooks, codes, indices, offsets, metric, dim};
+        mlxvs::IvfSearchOptions o;
+        o.n_probes = n_probes;
+        auto r = mlxvs::ivf_pq_search(i, queries, k, o, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "centers"_a,
+      "codebooks"_a,
+      "codes"_a,
+      "indices"_a,
+      "offsets"_a,
+      "metric"_a,
+      "dim"_a,
+      "queries"_a,
+      "k"_a,
+      nb::kw_only(),
+      "n_probes"_a = 20,
+      "stream"_a = nb::none(),
+      "Searches an IVF-PQ index (IvfPqIndex.search calls it).");
+
+  m.def(
+      "ivf_pq_extend",
+      [](const mx::array& centers,
+         const mx::array& codebooks,
+         const mx::array& codes,
+         const mx::array& indices,
+         const mx::array& offsets,
+         mlxvs::Metric metric,
+         int dim,
+         const mx::array& new_rows,
+         std::optional<mx::array> new_ids,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfPqIndex i{
+            centers, codebooks, codes, indices, offsets, metric, dim};
+        auto r = mlxvs::ivf_pq_extend(i, new_rows, new_ids, s);
+        return nb::make_tuple(r.codes, r.indices, r.offsets);
+      },
+      "centers"_a,
+      "codebooks"_a,
+      "codes"_a,
+      "indices"_a,
+      "offsets"_a,
+      "metric"_a,
+      "dim"_a,
+      "new_rows"_a,
+      "new_ids"_a = nb::none(),
+      "stream"_a = nb::none(),
+      "Adds rows to an IVF-PQ index (IvfPqIndex.extend calls it).");
+
+  m.def(
+      "refine",
+      [](const mx::array& dataset,
+         const mx::array& queries,
+         const mx::array& candidates,
+         int k,
+         mlxvs::Metric metric,
+         mx::StreamOrDevice s) {
+        auto r = mlxvs::refine(dataset, queries, candidates, k, metric, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "dataset"_a,
+      "queries"_a,
+      "candidates"_a,
+      "k"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      "stream"_a = nb::none(),
+      R"(
+        Exact re-ranking, as cuVS's ``refine``: the k nearest of each query's
+        candidate ids by exact distances, nearest first.
+
+        Args:
+            dataset (array): The rows ``[n, d]`` the ids index.
+            queries (array): ``[nq, d]``.
+            candidates (array): Candidate ids ``int [nq, c]`` (-1 skipped),
+              such as an approximate search for ``c = 2k`` to ``4k``.
+            k (int): At most ``c``.
+            metric (Metric): ``inner_product``, ``l2`` or ``cosine``.
+
+        Returns:
+            tuple(array, array): ids and distances as ``brute_force_knn``.
+      )");
+
+  m.def(
       "save_hnswlib",
       [](const std::string& path,
          const mx::array& dataset,

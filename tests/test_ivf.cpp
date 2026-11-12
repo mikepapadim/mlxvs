@@ -113,7 +113,70 @@ static void extend_case() {
   check(ok, "ivf_flat extend");
 }
 
+// IVF-PQ: approximate on its own, near exact once refined from the rows
+static void pq_case(Metric metric) {
+  int n = 20000, d = 64, nq = 500, k = 10;
+  auto all = low_rank(n + nq, d, 12, 71);
+  mx::array x(all.data(), {n, d}, mx::float32);
+  mx::array q(all.data() + (size_t)n * d, {nq, d}, mx::float32);
+  bool l2 = metric == Metric::L2;
+  mlxvs::IvfPqOptions o;
+  o.n_lists = 64;
+  auto index = mlxvs::ivf_pq_build(x, metric, o);
+  bool shape = index.codes.shape(0) == n && index.codes.shape(1) == 64 &&
+      index.codes.dtype() == mx::uint8;
+  auto exact = mlxvs::brute_force_knn(x, q, k, metric);
+  mlxvs::IvfSearchOptions so;
+  so.n_probes = 32;
+  auto approx = mlxvs::ivf_pq_search(index, q, k, so);
+  auto wide = mlxvs::ivf_pq_search(index, q, 4 * k, so);
+  auto refined = mlxvs::refine(x, q, wide.ids, k, metric);
+  bool valid_a, valid_r;
+  double r_a = recall(approx, exact, nq, k, l2, valid_a);
+  double r_r = recall(refined, exact, nq, k, l2, valid_r);
+  bool ok = shape && valid_r && r_a >= 0.6 && r_r >= 0.97;
+  std::printf(
+      "%-6s ivf_pq %-6s pq_dim=64 (cuVS default for d=64) n_probes=32: recall@10 %.4f, refined from 40 %.4f%s\n",
+      ok ? "PASS" : "FAIL",
+      metric_name(metric),
+      r_a,
+      r_r,
+      shape ? "" : ", WRONG code shape");
+  check(ok, "ivf_pq recall");
+}
+
+static void pq_extend_case() {
+  int n = 12000, d = 32, k = 5;
+  auto all = low_rank(n, d, 8, 81);
+  mx::array x(all.data(), {n, d}, mx::float32);
+  mlxvs::IvfPqOptions o;
+  o.n_lists = 32;
+  auto index =
+      mlxvs::ivf_pq_build(mx::slice(x, {0, 0}, {10000, d}), Metric::L2, o);
+  index = mlxvs::ivf_pq_extend(index, mx::slice(x, {10000, 0}, {n, d}));
+  mlxvs::IvfSearchOptions so;
+  so.n_probes = 32;
+  auto newq = mx::slice(x, {10000, 0}, {n, d});
+  auto wide = mlxvs::ivf_pq_search(index, newq, 4 * k, so);
+  auto got = mlxvs::refine(x, newq, wide.ids, k, Metric::L2);
+  mx::eval(got.ids);
+  int self = 0;
+  for (int i = 0; i < 2000; ++i) {
+    self += got.ids.data<int>()[i * k] == 10000 + i;
+  }
+  bool ok = index.codes.shape(0) == n && self >= 1990;
+  std::printf(
+      "%-6s ivf_pq extend 10000 + 2000: %d/2000 new rows found first after refine\n",
+      ok ? "PASS" : "FAIL",
+      self);
+  check(ok, "ivf_pq extend");
+}
+
 int main() {
+  pq_case(Metric::L2);
+  pq_case(Metric::InnerProduct);
+  pq_case(Metric::Cosine);
+  pq_extend_case();
   ivf_case(Metric::L2);
   ivf_case(Metric::InnerProduct);
   ivf_case(Metric::Cosine);

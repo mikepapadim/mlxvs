@@ -630,3 +630,38 @@ def test_ivf_flat_index(tmp_path, metric):
     if metric != "inner_product":
         ids, _ = index.search(base[7000:7050], 1, n_probes=64)
         assert (np.asarray(ids)[:, 0] == np.arange(7000, 7050)).all()
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+def test_ivf_pq_index(tmp_path, metric):
+    x = _low_rank(8200)
+    base, queries = x[:8000], x[8000:]
+    index = mlxvs.IvfPqIndex.build(base[:7000], n_lists=32, metric=metric, pq_dim=16)
+    assert index.pq_dim == 16 and index.pq_bits == 8
+    index.extend(base[7000:])
+    assert len(index) == 8000
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
+    ids, _ = index.search(queries, 10, n_probes=32)
+    assert _recall(ids, exact) > 0.5  # 16 bytes per 48-d row
+    # re-ranked from the rows: on the GPU, or read from NumPy on the host
+    for dataset in (mx.array(base), base):
+        ids, _ = index.search(queries, 10, n_probes=32, refine_ratio=4, dataset=dataset)
+        assert _recall(ids, exact) > 0.95
+    path = tmp_path / "pq.safetensors"
+    index.save(path)
+    loaded = mlxvs.IvfPqIndex.load(path)
+    a, _ = loaded.search(queries, 10, n_probes=32)
+    b, _ = index.search(queries, 10, n_probes=32)
+    assert (np.asarray(a) == np.asarray(b)).all()
+    with pytest.raises(ValueError):
+        index.search(queries, 10, refine_ratio=2)
+
+
+def test_refine():
+    x = _low_rank(3000)
+    q = x[:50]
+    cand = np.random.default_rng(0).permutation(3000)[None].repeat(50, 0)[:, :200]
+    cand[:, 0] = np.arange(50)  # each query's own row among its candidates
+    ids, dist = mlxvs.refine(x, q, cand, 5)
+    assert (np.asarray(ids)[:, 0] == np.arange(50)).all()
+    assert np.all(np.diff(np.asarray(dist), axis=1) >= 0)
