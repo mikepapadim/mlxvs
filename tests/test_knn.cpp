@@ -153,7 +153,46 @@ static void kmeans_case() {
   check(purity > 0.999, "kmeans purity");
 }
 
+// many rows at the same distance: the kept ones are those of lowest id, the
+// same on every run (ties are not decided by thread timing)
+static void ties_case() {
+  int n = 4000, d = 8, k = 10;
+  std::vector<float> host((size_t)n * d, 1.0f);
+  for (int i = 0; i < n; i += 97) {
+    host[(size_t)i * d] = 5.0f; // a few rows farther away
+  }
+  mx::array x(host.data(), {n, d}, mx::float32);
+  auto q = mx::slice(x, {1, 0}, {3, d});
+  auto first = mlxvs::brute_force_knn(x, q, k, Metric::L2, {777});
+  mx::eval(first.ids);
+  bool same = true;
+  for (int run = 0; run < 20; ++run) {
+    auto again = mlxvs::brute_force_knn(x, q, k, Metric::L2, {777});
+    mx::eval(again.ids);
+    for (int i = 0; i < 2 * k; ++i) {
+      same &= again.ids.data<int>()[i] == first.ids.data<int>()[i];
+    }
+  }
+  bool lowest = true;
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0, want = 1; j < k; ++j, ++want) {
+      if (want % 97 == 0) {
+        ++want;
+      }
+      lowest &= first.ids.data<int>()[i * k + j] == want;
+    }
+  }
+  bool ok = same && lowest;
+  std::printf(
+      "%-6s ties: %s across runs, lowest ids kept: %s\n",
+      ok ? "PASS" : "FAIL",
+      same ? "identical" : "DIFFERENT",
+      lowest ? "yes" : "NO");
+  check(ok, "deterministic ties");
+}
+
 int main() {
+  ties_case();
   kmeans_case();
   knn_case(Metric::InnerProduct, "inner", 5000, 64, 64, 10, 65536);
   knn_case(Metric::InnerProduct, "inner tiles", 5000, 64, 64, 100, 777);

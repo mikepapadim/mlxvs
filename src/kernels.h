@@ -26,8 +26,10 @@ inline bool mlxvs_before(float sa, int ia, float sb, int ib) {
 // One threadgroup of 256 threads per query row. Candidates are the row's t
 // scores (ids id_offset + column) and, unless first, the k entries of the
 // running list. Radix select on the float keys finds the k-th largest key in
-// four passes of 8 bits (per-SIMD-group histograms keep atomic contention low),
-// one pass gathers the k winners, a bitonic sort orders them.
+// four passes of 8 bits (per-SIMD-group histograms keep atomic contention low);
+// when more entries equal the k-th key than are kept, four more passes on the
+// ids keep those of lowest id, so the result does not depend on thread timing.
+// One pass gathers the k winners, a bitonic sort orders them.
 //
 // inputs: scores [nq, t] float, prev_ids [nq, k] int, prev_scores [nq, k]
 // float, params [t, k, id_offset, first] int outputs: out_ids [nq, k] int,
@@ -55,6 +57,7 @@ constexpr const char* TOPK_SOURCE = R"(
   threadgroup uint shared_need;
   threadgroup atomic_uint taken_above;
   threadgroup atomic_uint taken_equal;
+  threadgroup atomic_uint taken_tie;
   threadgroup float sel_score[KMAX];
   threadgroup int sel_id[KMAX];
 
@@ -98,10 +101,57 @@ constexpr const char* TOPK_SOURCE = R"(
     mask |= (255u << shift);
   }
 
-  // gather the winners: every key above the k-th, and the first `need` equal to it
+  // among the entries equal to the k-th key, the need of lowest id: the same
+  // radix select on ~id (larger for a lower id)
+  uint prefix2 = 0;
+  uint mask2 = 0;
+  uint need2 = need;
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    for (uint i = lid; i < SIMDS * 256; i += THREADS) {
+      atomic_store_explicit(&hist[i], 0u, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = lid; i < total; i += THREADS) {
+      float v = i < (uint)t ? scores[row + i] : prev_scores[prev + i - t];
+      if (mlxvs_key(v) != prefix) {
+        continue;
+      }
+      int id = i < (uint)t ? id_offset + (int)i : prev_ids[prev + i - t];
+      uint key2 = ~(uint)id;
+      if ((key2 & mask2) == prefix2) {
+        atomic_fetch_add_explicit(&hist[sg * 256 + ((key2 >> shift) & 255u)], 1u, memory_order_relaxed);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lid == 0) {
+      uint acc = 0;
+      uint digit = 0;
+      for (int d = 255; d >= 0; --d) {
+        uint c = 0;
+        for (uint s = 0; s < SIMDS; ++s) {
+          c += atomic_load_explicit(&hist[s * 256 + d], memory_order_relaxed);
+        }
+        if (acc + c >= need2) {
+          digit = (uint)d;
+          break;
+        }
+        acc += c;
+      }
+      shared_prefix = prefix2 | (digit << shift);
+      shared_need = need2 - acc;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    prefix2 = shared_prefix;
+    need2 = shared_need;
+    mask2 |= (255u << shift);
+  }
+
+  // gather the winners: every key above the k-th, and the `need` equal to it
+  // of lowest id (ties of equal id, only -1 entries, by arrival)
   if (lid == 0) {
     atomic_store_explicit(&taken_above, 0u, memory_order_relaxed);
     atomic_store_explicit(&taken_equal, 0u, memory_order_relaxed);
+    atomic_store_explicit(&taken_tie, 0u, memory_order_relaxed);
   }
   for (uint i = lid; i < KMAX; i += THREADS) {
     sel_score[i] = -INFINITY;
@@ -126,10 +176,17 @@ constexpr const char* TOPK_SOURCE = R"(
         sel_score[at] = v;
         sel_id[at] = id;
       } else if (key == prefix) {
-        uint at = atomic_fetch_add_explicit(&taken_equal, 1u, memory_order_relaxed);
-        if (at < need) {
+        uint key2 = ~(uint)id;
+        if (key2 > prefix2) {
+          uint at = atomic_fetch_add_explicit(&taken_equal, 1u, memory_order_relaxed);
           sel_score[above + at] = v;
           sel_id[above + at] = id;
+        } else if (key2 == prefix2) {
+          uint at = atomic_fetch_add_explicit(&taken_tie, 1u, memory_order_relaxed);
+          if (at < need2) {
+            sel_score[above + (need - need2) + at] = v;
+            sel_id[above + (need - need2) + at] = id;
+          }
         }
       }
     }

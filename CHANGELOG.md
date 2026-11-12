@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1 (2026-11-12)
+
+- `brute_force_knn` (and every exact k-NN built on it): when more candidates tie with the k-th score than are
+  kept, the ones of lowest id are kept. Before, the threads that arrived first decided, so ties (frequent with
+  float32 distances of data far from the origin) could give different neighbors from run to run. scikit-learn's
+  `check_fit_idempotent` caught it through the sklearn-ann transformer.
+
 ## 0.9.0 (2026-11-12)
 
 - A filter per query, as cuVS's bitmap filter: `filter=` also takes bool `[nq, n]` or `uint32 [nq, ceil(n / 32)]`;
