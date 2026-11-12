@@ -214,8 +214,57 @@ static void extend_case() {
   check(ok, "cagra_extend");
 }
 
+// graph_search_vpq (CAGRA-Q): the graph searched over VPQ codes, then refined
+// from the rows
+static void vpq_case(Metric metric) {
+  int n = 20000, dim = 64, nq = 500, d = 32, k = 10;
+  auto all = low_rank(n + nq, dim, 12, 91);
+  mx::array x(all.data(), {n, dim}, mx::float32);
+  mx::array q(all.data() + (size_t)n * dim, {nq, dim}, mx::float32);
+  mlxvs::CagraOptions o;
+  o.graph_degree = d;
+  auto graph = mlxvs::cagra_build(x, metric, o);
+  auto vpq = mlxvs::vpq_build(x);
+  mx::eval(graph, vpq.pq_codes);
+  bool shape = vpq.pq_codes.shape(1) == 16 && vpq.pq_codebook.shape(0) == 256 &&
+      vpq.pq_codebook.shape(1) == 4;
+  mlxvs::SearchOptions so;
+  so.itopk_size = 128;
+  auto approx = mlxvs::graph_search_vpq(vpq, graph, q, k, metric, so);
+  auto wide = mlxvs::graph_search_vpq(vpq, graph, q, 4 * k, metric, so);
+  auto refined = mlxvs::refine(x, q, wide.ids, k, metric);
+  auto exact = mlxvs::brute_force_knn(x, q, k, metric);
+  mx::eval(approx.ids, refined.ids, refined.distances, exact.distances);
+  auto hits = [&](const mx::array& ids) {
+    // ids among the exact k (ids, as distances here are approximate)
+    long h = 0;
+    const int* g = ids.data<int>();
+    const int* e = exact.ids.data<int>();
+    for (int i = 0; i < nq; ++i) {
+      std::unordered_set<int> want(e + i * k, e + i * k + k);
+      for (int j = 0; j < k; ++j) {
+        h += want.count(g[i * k + j]);
+      }
+    }
+    return h / (double)(nq * k);
+  };
+  mx::eval(exact.ids);
+  double ra = hits(approx.ids), rr = hits(refined.ids);
+  bool ok = shape && ra >= 0.7 && rr >= 0.97;
+  std::printf(
+      "%-6s graph_search_vpq %-6s 16 B + 4 B per row: recall@10 %.4f, refined from 40 %.4f%s\n",
+      ok ? "PASS" : "FAIL",
+      metric_name(metric),
+      ra,
+      rr,
+      shape ? "" : ", WRONG shapes");
+  check(ok, "graph_search_vpq");
+}
+
 int main() {
   extend_case();
+  vpq_case(Metric::L2);
+  vpq_case(Metric::InnerProduct);
   reference_case(3000, 32, 32, 16);
   reference_case(2000, 16, 64, 32);
   reference_case(1000, 8, 24, 7);

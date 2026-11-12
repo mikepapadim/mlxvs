@@ -665,3 +665,34 @@ def test_refine():
     ids, dist = mlxvs.refine(x, q, cand, 5)
     assert (np.asarray(ids)[:, 0] == np.arange(50)).all()
     assert np.all(np.diff(np.asarray(dist), axis=1) >= 0)
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+def test_cagra_index_compress(tmp_path, metric):
+    x = _low_rank(8200)
+    base, queries = x[:8000], x[8000:]
+    index = mlxvs.CagraIndex.build(base, 32, metric)
+    assert index.compress() is index and index.compressed
+    assert index.dataset is None and len(index) == 8000 and index.dim == 48
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
+    ids, _ = index.search(queries, 10, itopk_size=128)
+    assert _recall(ids, exact) > 0.6  # 12 codes + a center for 48 floats
+    for algo in ("single_cta", "multi_cta"):
+        for rows in (mx.array(base), base):
+            ids, _ = index.search(
+                queries, 10, refine_ratio=4, dataset=rows, itopk_size=128, algo=algo
+            )
+            assert _recall(ids, exact) > 0.95
+    path = tmp_path / "q.safetensors"
+    index.save(path)
+    loaded = mlxvs.CagraIndex.load(path)
+    assert loaded.compressed and loaded.dim == 48
+    a, _ = loaded.search(queries, 10)
+    b, _ = index.search(queries, 10)
+    assert (np.asarray(a) == np.asarray(b)).all()
+    with pytest.raises(ValueError):
+        index.extend(base[:10])
+    with pytest.raises(ValueError):
+        index.save_hnswlib(str(tmp_path / "x.hnsw"))
+    with pytest.raises(ValueError):
+        index.search(queries, 10, refine_ratio=2)

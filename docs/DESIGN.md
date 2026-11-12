@@ -77,6 +77,11 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   built 8 subspaces at a time (256 codes: 8 KB) and every thread adds the entries of its rows' codes, keeping its
   first 8 rows' sums in registers and the rest in the candidate buffer. The best k then go through `topk_merge` as
   IVF-Flat's.
+- `graph_search_vpq` (CAGRA-Q): the single- and multi-CTA kernels compiled again with `mlxvs_score` replaced by
+  `mlxvs_score_vpq`, whose team of lanes takes the subspaces in turn, adding each row's coarse center (device
+  memory, few enough to stay in cache) and its codebook entries. `vpq_build` follows cuVS's `vpq_dataset`: k-means
+  coarse centers on 100 rows each, then one codebook fitted on the residuals cut into `pq_len` pieces (at most 256
+  pieces per code).
 - `vamana_prune`: JVector's `VamanaDiversityProvider.retainDiverse` on the GPU. Per chunk of nodes (gathered rows
   near 256 MB), the candidates' rows are gathered and two batched matrix multiplies give the node-candidate and
   candidate-candidate dot products, turned into JVector's similarities (1 / (1 + squared distance) from norms and

@@ -492,6 +492,79 @@ NB_MODULE(_core, m) {
       )");
 
   m.def(
+      "vpq_build",
+      [](const mx::array& rows,
+         int pq_dim,
+         int pq_bits,
+         int vq_n_centers,
+         int kmeans_n_iters,
+         unsigned long long seed,
+         mx::StreamOrDevice s) {
+        mlxvs::VpqOptions o;
+        o.pq_dim = pq_dim;
+        o.pq_bits = pq_bits;
+        o.vq_n_centers = vq_n_centers;
+        o.kmeans_n_iters = kmeans_n_iters;
+        o.seed = seed;
+        auto v = mlxvs::vpq_build(rows, o, s);
+        return nb::make_tuple(
+            v.vq_centers, v.pq_codebook, v.vq_ids, v.pq_codes, v.dim);
+      },
+      "rows"_a,
+      nb::kw_only(),
+      "pq_dim"_a = 0,
+      "pq_bits"_a = 8,
+      "vq_n_centers"_a = 0,
+      "kmeans_n_iters"_a = 25,
+      "seed"_a = 42,
+      "stream"_a = nb::none(),
+      "Compresses rows as cuVS's VPQ dataset; returns (vq_centers, "
+      "pq_codebook, vq_ids, pq_codes, dim). CagraIndex.compress calls it.");
+
+  m.def(
+      "graph_search_vpq",
+      [](const mx::array& vq_centers,
+         const mx::array& pq_codebook,
+         const mx::array& vq_ids,
+         const mx::array& pq_codes,
+         int dim,
+         const mx::array& graph,
+         const mx::array& queries,
+         int k,
+         mlxvs::Metric metric,
+         int itopk_size,
+         int search_width,
+         mlxvs::SearchAlgo algo,
+         std::optional<mx::array> filter,
+         mx::StreamOrDevice s) {
+        mlxvs::VpqDataset v{vq_centers, pq_codebook, vq_ids, pq_codes, dim};
+        mlxvs::SearchOptions o;
+        o.itopk_size = itopk_size;
+        o.search_width = search_width;
+        o.algo = algo;
+        o.filter = filter;
+        auto r = mlxvs::graph_search_vpq(v, graph, queries, k, metric, o, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "vq_centers"_a,
+      "pq_codebook"_a,
+      "vq_ids"_a,
+      "pq_codes"_a,
+      "dim"_a,
+      "graph"_a,
+      "queries"_a,
+      "k"_a,
+      "metric"_a,
+      nb::kw_only(),
+      "itopk_size"_a = 64,
+      "search_width"_a = 1,
+      "algo"_a = mlxvs::SearchAlgo::Auto,
+      "filter"_a = nb::none(),
+      "stream"_a = nb::none(),
+      "graph_search over a VPQ dataset (CagraIndex.search calls it when the "
+      "index is compressed).");
+
+  m.def(
       "save_hnswlib",
       [](const std::string& path,
          const mx::array& dataset,

@@ -433,6 +433,63 @@ MLXVS_API Neighbors graph_search(
     const SearchOptions& options = {},
     mx::StreamOrDevice s = {});
 
+/**
+ * A VPQ-compressed dataset, as cuVS's vpq_dataset (CAGRA-Q): every row is its
+ * nearest coarse center plus, per subspace of pq_len columns, the entry of
+ * one shared codebook nearest its residual. pq_dim + 4 bytes per row.
+ */
+struct VpqDataset {
+  /** The coarse centers, float32 [vq_n_centers, pq_dim * pq_len]. */
+  mx::array vq_centers;
+  /** The shared codebook, float32 [2^pq_bits, pq_len]. */
+  mx::array pq_codebook;
+  /** Every row's coarse center, int32 [n]. */
+  mx::array vq_ids;
+  /** Every row's codes, uint8 [n, pq_dim]. */
+  mx::array pq_codes;
+  /** The rows' dimension (columns past it are zero padding). */
+  int dim;
+};
+
+/** Options of vpq_build, named after cuVS's vpq_params. */
+struct VpqOptions {
+  /** Subspaces; 0: ceil(dim / 4), as cuVS (pq_len 4). */
+  int pq_dim = 0;
+  /** Bits per code, 4 to 8. */
+  int pq_bits = 8;
+  /** Coarse centers; 0: sqrt(n) rounded up to a multiple of 8, as cuVS. */
+  int vq_n_centers = 0;
+  int kmeans_n_iters = 25;
+  /** Rows the coarse centers are trained on; 0: 100 per center. */
+  double vq_kmeans_trainset_fraction = 0;
+  /** Rows the codebook is trained on (each gives pq_dim samples); 0: 1000
+   * per code. */
+  double pq_kmeans_trainset_fraction = 0;
+  unsigned long long seed = 42;
+};
+
+/** Compresses rows [n, d] (any real dtype; unit rows for cosine) as cuVS's
+ * VPQ dataset. Runs on the GPU. */
+MLXVS_API VpqDataset vpq_build(
+    const mx::array& rows,
+    const VpqOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/**
+ * graph_search over a VPQ-compressed dataset (cuVS's CAGRA-Q): distances
+ * from each row's coarse center and codebook entries, so only the codes are
+ * read. Approximate distances; refine() re-ranks from the rows. L2 and
+ * InnerProduct (compress unit rows for cosine).
+ */
+MLXVS_API Neighbors graph_search_vpq(
+    const VpqDataset& dataset,
+    const mx::array& graph,
+    const mx::array& queries,
+    int k,
+    Metric metric,
+    const SearchOptions& options = {},
+    mx::StreamOrDevice s = {});
+
 /** Options of cagra_extend, as cuVS's cagra::extend_params. */
 struct ExtendOptions {
   /**

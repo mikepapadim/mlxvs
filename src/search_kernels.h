@@ -97,6 +97,53 @@ inline float mlxvs_score(
   }
   return active && metric == 2 ? acc * inv_norm[id] : acc;
 }
+// Score of a VPQ-compressed row (cuVS's CAGRA-Q dataset) against the query:
+// the row is its coarse center vq[vqids[id]] plus, per subspace m, the
+// codebook entry pqcb[codes[id][m]] (PQ_LEN floats). A team of TEAM lanes
+// takes the subspaces in turn; every lane of the SIMD group must call it.
+// metric: 0 inner product, 1 l2 (as minus the squared distance).
+template <
+    uint TEAM,
+    int PQ_LEN,
+    int PQ_DIM,
+    typename V,
+    typename C,
+    typename I,
+    typename P,
+    typename Q,
+    typename N>
+inline float mlxvs_score_vpq(
+    V vq,
+    C pqcb,
+    I vqids,
+    P codes,
+    Q qv,
+    N inv_norm,
+    int id,
+    int d,
+    int metric,
+    uint lane,
+    bool active) {
+  float acc = 0.0f;
+  if (active) {
+    int tl = (int)(lane % TEAM);
+    size_t center = (size_t)vqids[id] * (size_t)d;
+    size_t code_row = (size_t)id * PQ_DIM;
+    for (int m = tl; m < PQ_DIM; m += (int)TEAM) {
+      size_t cb = (size_t)codes[code_row + m] * PQ_LEN;
+      for (int j = 0; j < PQ_LEN; ++j) {
+        int col = m * PQ_LEN + j;
+        float x = vq[center + col] + pqcb[cb + j];
+        float a = qv[col];
+        acc += metric == 1 ? -(a - x) * (a - x) : a * x;
+      }
+    }
+  }
+  for (uint off = TEAM / 2; off > 0; off >>= 1) {
+    acc += simd_shuffle_xor(acc, (ushort)off);
+  }
+  return acc;
+}
 // Inserts id into the visited set (open addressing, linear probing, empty
 // slots -1). True if it was not there.
 inline bool mlxvs_visit(threadgroup atomic_int* table, uint bits, int id) {

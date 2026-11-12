@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0 (2026-11-12)
+
+- CAGRA-Q: `CagraIndex.compress()` (C++ `vpq_build`, `graph_search_vpq`) replaces the stored rows by cuVS's VPQ
+  codes: each row's nearest coarse center (`sqrt(n)` of them) plus `ceil(d / 4)` codes of its residual in one
+  shared 256-entry codebook. The graph search computes distances from the codes (both single- and multi-CTA, filters
+  included); `search(..., refine_ratio=4, dataset=rows)` re-ranks exactly, from rows on the GPU or in a NumPy array
+  or `numpy.memmap`. SIFT1M: 36 MB instead of 505 MB, compressed in 6.3 s; 234,000 queries/s from the codes alone
+  (recall@10 0.716), recall@10 0.981 at 103,000 queries/s refined (`itopk_size` 128).
+- `search_kernels.h`: the VPQ kernels are the same sources with the distance function swapped.
+
 ## 0.11.0 (2026-11-12)
 
 - `IvfPqIndex` (C++ `ivf_pq_build`, `ivf_pq_search`, `ivf_pq_extend`), as cuVS's IVF-PQ: k-means lists, rows

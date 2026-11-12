@@ -20,26 +20,78 @@ namespace mlxvs {
 
 namespace {
 
-const mx::fast::CustomKernelFunction& search_kernel() {
-  static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
+// The search kernels read rows (base) or, for a VPQ dataset, coarse centers,
+// a codebook and codes: the VPQ variants swap the distance function.
+std::string vpq_source(const char* source) {
+  std::string src = source;
+  const std::string from = "mlxvs_score<TEAM>(base, ";
+  const std::string to =
+      "mlxvs_score_vpq<TEAM, PQ_LEN, PQ_DIM>(vq, pqcb, vqids, codes, ";
+  for (size_t at = src.find(from); at != std::string::npos;
+       at = src.find(from, at + to.size())) {
+    src.replace(at, from.size(), to);
+  }
+  return src;
+}
+
+std::vector<std::string> data_names(bool vpq) {
+  return vpq ? std::vector<std::string>{"vq", "pqcb", "vqids", "codes"}
+             : std::vector<std::string>{"base"};
+}
+
+std::vector<std::string> with(
+    std::vector<std::string> names,
+    std::initializer_list<const char*> more) {
+  for (auto m : more) {
+    names.push_back(m);
+  }
+  return names;
+}
+
+const mx::fast::CustomKernelFunction& search_kernel(bool vpq) {
+  static const mx::fast::CustomKernelFunction plain = mx::fast::metal_kernel(
       "mlxvs_graph_search",
-      {"base", "graph", "queries", "inv_norm", "filter", "seeds", "params"},
+      with(
+          data_names(false),
+          {"graph", "queries", "inv_norm", "filter", "seeds", "params"}),
       {"out_ids", "out_scores"},
       kernels::SEARCH_SOURCE,
       kernels::SEARCH_HEADER);
-  return kernel;
+  static const mx::fast::CustomKernelFunction compressed =
+      mx::fast::metal_kernel(
+          "mlxvs_graph_search_vpq",
+          with(
+              data_names(true),
+              {"graph", "queries", "inv_norm", "filter", "seeds", "params"}),
+          {"out_ids", "out_scores"},
+          vpq_source(kernels::SEARCH_SOURCE),
+          kernels::SEARCH_HEADER);
+  return vpq ? compressed : plain;
 }
 
-const mx::fast::CustomKernelFunction& search_mc_kernel() {
-  static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
+const mx::fast::CustomKernelFunction& search_mc_kernel(bool vpq) {
+  static const mx::fast::CustomKernelFunction plain = mx::fast::metal_kernel(
       "mlxvs_graph_search_mc",
-      {"base", "graph", "queries", "inv_norm", "filter", "seeds", "params"},
+      with(
+          data_names(false),
+          {"graph", "queries", "inv_norm", "filter", "seeds", "params"}),
       {"out_ids", "out_scores", "traversed"},
       kernels::SEARCH_MC_SOURCE,
       kernels::SEARCH_HEADER,
       /*ensure_row_contiguous=*/true,
       /*atomic_outputs=*/true);
-  return kernel;
+  static const mx::fast::CustomKernelFunction compressed =
+      mx::fast::metal_kernel(
+          "mlxvs_graph_search_mc_vpq",
+          with(
+              data_names(true),
+              {"graph", "queries", "inv_norm", "filter", "seeds", "params"}),
+          {"out_ids", "out_scores", "traversed"},
+          vpq_source(kernels::SEARCH_MC_SOURCE),
+          kernels::SEARCH_HEADER,
+          /*ensure_row_contiguous=*/true,
+          /*atomic_outputs=*/true);
+  return vpq ? compressed : plain;
 }
 
 int pow2_at_least(int x) {
@@ -94,8 +146,18 @@ int reach_hops(int n, int deg) {
   return hops;
 }
 
+// The rows a search reads: as they are, or VPQ-compressed.
+struct Dataset {
+  std::vector<mx::array> arrays; // {base} or {vq, pqcb, vqids, codes}
+  int n;
+  int d; // columns (VPQ: pq_dim * pq_len)
+  bool vpq;
+  int pq_len;
+  int pq_dim;
+};
+
 struct Prepared {
-  mx::array base;
+  Dataset data;
   mx::array graph;
   mx::array queries;
   mx::array inv_norm;
@@ -106,6 +168,14 @@ struct Prepared {
   mx::array seeds; // [nq, num_seeds] int32, or one dummy entry
   int num_seeds;
 };
+
+std::vector<mx::array> inputs(
+    const Prepared& in,
+    std::initializer_list<mx::array> more) {
+  std::vector<mx::array> all = in.data.arrays;
+  all.insert(all.end(), more);
+  return all;
+}
 
 // Lanes per distance, as cuVS picks its team size: the instance whose block
 // dimension (128, 256, 512 for teams of 8, 16, 32) is nearest d.
@@ -141,8 +211,8 @@ Neighbors search_multi_cta(
     int k,
     int itopk,
     const SearchOptions& options) {
-  int n = in.base.shape(0);
-  int d = in.base.shape(1);
+  int n = in.data.n;
+  int d = in.data.d;
   int deg = in.graph.shape(1);
   int nq = in.queries.shape(0);
   int width = options.search_width;
@@ -216,8 +286,8 @@ Neighbors search_multi_cta(
          tbits},
         {11},
         mx::int32);
-    auto out = search_mc_kernel()(
-        {in.base, in.graph, qs, in.inv_norm, qfilter, qseeds, params},
+    auto out = search_mc_kernel(in.data.vpq)(
+        inputs(in, {in.graph, qs, in.inv_norm, qfilter, qseeds, params}),
         {{bq, cols}, {bq, cols}, {bq, 1 << tbits}},
         {mx::int32, mx::float32, mx::int32},
         {num_cta * kernels::SEARCH_MC_THREADS, bq, 1},
@@ -229,7 +299,9 @@ Neighbors search_multi_cta(
          {"VBITS", vbits},
          {"TEAM", in.team},
          {"FILTER", in.filtered},
-         {"NSEEDS", in.num_seeds}},
+         {"NSEEDS", in.num_seeds},
+         {"PQ_LEN", in.data.pq_len},
+         {"PQ_DIM", in.data.pq_dim}},
         -1.0f,
         false,
         {});
@@ -256,8 +328,8 @@ Neighbors search_single_cta(
     int k,
     int itopk,
     const SearchOptions& options) {
-  int n = in.base.shape(0);
-  int d = in.base.shape(1);
+  int n = in.data.n;
+  int d = in.data.d;
   int deg = in.graph.shape(1);
   int nq = in.queries.shape(0);
   int width = options.search_width;
@@ -320,8 +392,8 @@ Neighbors search_single_cta(
          rand_slots},
         {10},
         mx::int32);
-    auto out = search_kernel()(
-        {in.base, in.graph, qs, in.inv_norm, qfilter, qseeds, params},
+    auto out = search_kernel(in.data.vpq)(
+        inputs(in, {in.graph, qs, in.inv_norm, qfilter, qseeds, params}),
         {{bq, k}, {bq, k}},
         {mx::int32, mx::float32},
         {bq * kernels::SEARCH_THREADS, 1, 1},
@@ -333,7 +405,9 @@ Neighbors search_single_cta(
          {"HBITS", hbits},
          {"TEAM", in.team},
          {"FILTER", in.filtered},
-         {"NSEEDS", in.num_seeds}},
+         {"NSEEDS", in.num_seeds},
+         {"PQ_LEN", in.data.pq_len},
+         {"PQ_DIM", in.data.pq_dim}},
         std::nullopt,
         false,
         {});
@@ -351,26 +425,22 @@ Neighbors search_single_cta(
 
 } // namespace
 
-Neighbors graph_search(
-    const mx::array& base_in,
+namespace {
+
+Neighbors search_impl(
+    const Dataset& data,
     const mx::array& graph_in,
     const mx::array& queries_in,
     int k,
     Metric metric,
-    const SearchOptions& options,
-    mx::StreamOrDevice s) {
+    const SearchOptions& options) {
   const char* op = "mlxvs::graph_search";
-  mx::StreamContext context(detail::gpu_stream(s, op));
-  // float16, int8 and uint8 rows are read as they are (half or a quarter of
-  // the memory traffic), as cuVS's datasets; other dtypes are converted to
-  // float32
-  auto as_is = base_in.dtype() == mx::float16 || base_in.dtype() == mx::int8 ||
-      base_in.dtype() == mx::uint8;
-  auto base = base_in.ndim() == 2 && as_is
-      ? base_in
-      : detail::float_rows(base_in, op, "base");
   auto queries = detail::float_rows(queries_in, op, "queries");
-  if (graph_in.ndim() != 2 || graph_in.shape(0) != base.shape(0)) {
+  if (data.vpq && queries.shape(1) < data.d) {
+    // the dataset's columns were padded to pq_dim * pq_len
+    queries = mx::pad(queries, {{0, 0}, {0, data.d - (int)queries.shape(1)}});
+  }
+  if (graph_in.ndim() != 2 || graph_in.shape(0) != data.n) {
     throw std::invalid_argument(
         "[mlxvs::graph_search] graph must be [n, degree], one row per base "
         "row.");
@@ -379,12 +449,12 @@ Neighbors graph_search(
     throw std::invalid_argument(
         "[mlxvs::graph_search] graph must hold integer ids.");
   }
-  if (base.shape(1) != queries.shape(1)) {
+  if (data.d != queries.shape(1)) {
     throw std::invalid_argument(
         "[mlxvs::graph_search] base and queries must have the same number of "
         "columns.");
   }
-  int n = base.shape(0);
+  int n = data.n;
   int deg = graph_in.shape(1);
   int nq = queries.shape(0);
   int width = options.search_width;
@@ -419,11 +489,16 @@ Neighbors graph_search(
                                              : mx::astype(graph_in, mx::int32);
   auto inv_norm = mx::array({1.0f});
   if (metric == Metric::Cosine) {
+    if (data.vpq) {
+      throw std::invalid_argument(
+          "[mlxvs::graph_search_vpq] compress unit rows and search them with "
+          "InnerProduct for cosine.");
+    }
     auto qn = mx::sqrt(mx::sum(mx::square(queries), 1, /*keepdims=*/true));
     queries = queries / mx::maximum(qn, mx::array(1e-30f));
     inv_norm = mx::rsqrt(
         mx::maximum(
-            mx::sum(mx::square(mx::astype(base, mx::float32)), 1),
+            mx::sum(mx::square(mx::astype(data.arrays[0], mx::float32)), 1),
             mx::array(1e-30f)));
   }
   int metric_code = metric == Metric::InnerProduct ? 0
@@ -504,18 +579,71 @@ Neighbors graph_search(
     seeds = num_seeds > 0 ? mx::astype(sd, mx::int32) : seeds;
   }
   Prepared in{
-      base,
+      data,
       graph,
       queries,
       inv_norm,
       metric_code,
-      team_for(base.shape(1), options.team_size),
+      team_for(data.d, options.team_size),
       filter,
       filtered,
       seeds,
       num_seeds};
   return multi ? search_multi_cta(in, k, itopk, options)
                : search_single_cta(in, k, itopk, options);
+}
+
+} // namespace
+
+Neighbors graph_search(
+    const mx::array& base_in,
+    const mx::array& graph,
+    const mx::array& queries,
+    int k,
+    Metric metric,
+    const SearchOptions& options,
+    mx::StreamOrDevice s) {
+  const char* op = "mlxvs::graph_search";
+  mx::StreamContext context(detail::gpu_stream(s, op));
+  // float16, int8 and uint8 rows are read as they are (half or a quarter of
+  // the memory traffic), as cuVS's datasets; other dtypes are converted to
+  // float32
+  auto as_is = base_in.dtype() == mx::float16 || base_in.dtype() == mx::int8 ||
+      base_in.dtype() == mx::uint8;
+  auto base = base_in.ndim() == 2 && as_is
+      ? base_in
+      : detail::float_rows(base_in, op, "base");
+  Dataset data{{base}, base.shape(0), base.shape(1), false, 1, 1};
+  return search_impl(data, graph, queries, k, metric, options);
+}
+
+Neighbors graph_search_vpq(
+    const VpqDataset& dataset,
+    const mx::array& graph,
+    const mx::array& queries,
+    int k,
+    Metric metric,
+    const SearchOptions& options,
+    mx::StreamOrDevice s) {
+  const char* op = "mlxvs::graph_search_vpq";
+  mx::StreamContext context(detail::gpu_stream(s, op));
+  int pq_dim = dataset.pq_codes.shape(1);
+  int pq_len = dataset.pq_codebook.shape(1);
+  Dataset data{
+      {dataset.vq_centers,
+       dataset.pq_codebook,
+       mx::astype(dataset.vq_ids, mx::int32),
+       dataset.pq_codes},
+      dataset.pq_codes.shape(0),
+      pq_dim * pq_len,
+      true,
+      pq_len,
+      pq_dim};
+  if (queries.ndim() != 2 || queries.shape(1) != dataset.dim) {
+    throw std::invalid_argument(
+        "[mlxvs::graph_search_vpq] queries must have the dataset's columns.");
+  }
+  return search_impl(data, graph, queries, k, metric, options);
 }
 
 } // namespace mlxvs

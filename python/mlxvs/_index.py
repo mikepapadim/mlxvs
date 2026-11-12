@@ -48,6 +48,9 @@ class CagraIndex:
         self._dataset = dataset
         self._graph = graph
         self._metric = metric
+        # VPQ-compressed rows (compress()): (vq_centers, pq_codebook, vq_ids,
+        # pq_codes, dim), the rows themselves then dropped
+        self._vpq = None
 
     @classmethod
     def build(
@@ -124,12 +127,47 @@ class CagraIndex:
         mx.eval(dataset, graph)
         return cls(dataset, graph, metric)
 
-    def search(self, queries, k=10, **kwargs):
+    def compress(self, pq_dim=0, pq_bits=8, vq_n_centers=0, **kwargs):
+        """Replaces the stored rows by their VPQ codes, as cuVS's CAGRA-Q:
+        each row becomes its nearest coarse center plus ``pq_dim`` codes of
+        ``pq_bits`` into one shared codebook (``pq_dim + 4`` bytes per row;
+        by default ``pq_dim = ceil(dim / 4)``, so 36 bytes instead of 512 at
+        d = 128). Searches then read only the codes; pass the rows to
+        :meth:`search` with ``refine_ratio > 1`` to re-rank exactly.
+
+        Returns:
+            CagraIndex: this index, compressed.
+        """
+        if self._vpq is not None:
+            raise ValueError("the index is already compressed")
+        if self._dataset.dtype in (mx.int8, mx.uint8):
+            raise ValueError("byte datasets are compressed already")
+        self._vpq = mlxvs._core.vpq_build(
+            self._dataset,
+            pq_dim=pq_dim,
+            pq_bits=pq_bits,
+            vq_n_centers=vq_n_centers,
+            **kwargs,
+        )
+        self._dim = self._dataset.shape[1]
+        self._dataset = None
+        return self
+
+    @property
+    def compressed(self):
+        """Whether the rows are stored as VPQ codes (:meth:`compress`)."""
+        return self._vpq is not None
+
+    def search(self, queries, k=10, refine_ratio=1.0, dataset=None, **kwargs):
         """The k nearest dataset rows of every query, as cuVS's ``cagra.search``.
 
         Args:
             queries (array): Query rows ``[nq, d]``, any real dtype.
             k (int): Neighbors per query.
+            refine_ratio (float): With ``dataset`` (the rows, MLX, NumPy
+              or ``numpy.memmap``), re-rank ``ceil(k * refine_ratio)``
+              candidates by exact distances; for compressed indexes.
+            dataset (array): The indexed rows, for ``refine_ratio``.
             **kwargs: ``graph_search``'s options: ``itopk_size`` (default 64),
               ``search_width``, ``algo`` (``"auto"``, ``"single_cta"``,
               ``"multi_cta"``), ``max_iterations``, ``min_iterations``,
@@ -145,6 +183,28 @@ class CagraIndex:
         q = mlxvs._array(queries)
         if q.ndim == 1:
             q = q[None]
+        if refine_ratio > 1:
+            if dataset is None:
+                raise ValueError("refine_ratio > 1 needs the rows as dataset")
+            kc = min(256, max(k, int(-(-k * refine_ratio // 1))))
+            ids, _ = self.search(q, kc, **kwargs)
+            return mlxvs.refine(dataset, q, ids, k, self._metric)
+        if self._vpq is not None:
+            metric = "inner_product" if self._metric == "cosine" else self._metric
+            if self._metric == "cosine":
+                q = _unit_rows(q)
+            if "algo" in kwargs:
+                kwargs["algo"] = mlxvs._enum(mlxvs.SearchAlgo, kwargs["algo"])
+            if kwargs.get("filter") is not None:
+                kwargs["filter"] = mlxvs._filter(kwargs["filter"])
+            return mlxvs._core.graph_search_vpq(
+                *self._vpq,
+                self._graph,
+                q.astype(mx.float32),
+                k,
+                getattr(mlxvs.Metric, metric),
+                **kwargs,
+            )
         metric = self._metric
         if metric == "cosine" and self._dataset.dtype in (mx.int8, mx.uint8):
             # integer rows are stored as they are: cosine from their norms
@@ -175,6 +235,8 @@ class CagraIndex:
         Returns:
             CagraIndex: this index, extended.
         """
+        if self._vpq is not None:
+            raise ValueError("compressed indexes cannot be extended; extend first")
         x = mlxvs._array(rows)
         if x.ndim == 1:
             x = x[None]
@@ -207,10 +269,27 @@ class CagraIndex:
         path = str(path)
         if not path.endswith(".safetensors"):
             raise ValueError("the file name must end in .safetensors")
+        if self._vpq is not None:
+            vq, cb, ids, codes, dim = self._vpq
+            arrays = {
+                "graph": self._graph,
+                "vq_centers": vq,
+                "pq_codebook": cb,
+                "vq_ids": ids,
+                "pq_codes": codes,
+            }
+            meta = {"dim": str(dim)}
+        else:
+            arrays, meta = {"dataset": self._dataset, "graph": self._graph}, {}
         mx.save_safetensors(
             path,
-            {"dataset": self._dataset, "graph": self._graph},
-            metadata={"format": _FORMAT, "version": "1", "metric": self._metric},
+            arrays,
+            metadata={
+                "format": _FORMAT,
+                "version": "1",
+                "metric": self._metric,
+                **meta,
+            },
         )
 
     def save_hnswlib(self, path):
@@ -230,6 +309,7 @@ class CagraIndex:
         Labels are row ids. hnswlib's distances are its own: squared L2, or
         1 - similarity for ``"cosine"`` and ``"ip"``.
         """
+        self._need_rows("save_hnswlib")
         mlxvs._core.save_hnswlib(
             str(path), self._dataset, self._graph, self._metric_enum
         )
@@ -248,9 +328,14 @@ class CagraIndex:
         ``VectorSimilarityFunction.EUCLIDEAN`` (``"l2"``), ``COSINE`` or
         ``DOT_PRODUCT``. Node ordinals are row ids.
         """
+        self._need_rows("save_jvector")
         mlxvs._core.save_jvector(
             str(path), self._dataset, self._graph, self._metric_enum
         )
+
+    def _need_rows(self, what):
+        if self._vpq is not None:
+            raise ValueError(f"{what} needs the rows; the index is compressed")
 
     @property
     def _metric_enum(self):
@@ -260,9 +345,24 @@ class CagraIndex:
     def load(cls, path):
         """Loads an index saved by :meth:`save`."""
         arrays, meta = mx.load(str(path), return_metadata=True)
-        if meta.get("format") != _FORMAT or "dataset" not in arrays:
+        if meta.get("format") != _FORMAT or "graph" not in arrays:
             raise ValueError(f"{path} is not a saved mlxvs CagraIndex")
-        return cls(arrays["dataset"], arrays["graph"], meta["metric"])
+        if "pq_codes" not in arrays:
+            return cls(arrays["dataset"], arrays["graph"], meta["metric"])
+        dim = int(meta["dim"])
+        index = cls(
+            mx.zeros((arrays["graph"].shape[0], dim)), arrays["graph"], meta["metric"]
+        )
+        index._vpq = (
+            arrays["vq_centers"],
+            arrays["pq_codebook"],
+            arrays["vq_ids"],
+            arrays["pq_codes"],
+            dim,
+        )
+        index._dim = dim
+        index._dataset = None
+        return index
 
     @property
     def dataset(self):
@@ -280,7 +380,7 @@ class CagraIndex:
 
     @property
     def dim(self):
-        return self._dataset.shape[1]
+        return self._vpq[4] if self._vpq is not None else self._dataset.shape[1]
 
     @property
     def graph_degree(self):
@@ -288,10 +388,11 @@ class CagraIndex:
 
     @property
     def dtype(self):
-        return self._dataset.dtype
+        """The stored rows' dtype (uint8 codes when compressed)."""
+        return mx.uint8 if self._vpq is not None else self._dataset.dtype
 
     def __len__(self):
-        return self._dataset.shape[0]
+        return self._graph.shape[0]
 
     def __repr__(self):
         return (
