@@ -6,7 +6,8 @@ Every function takes rows as an ``mlx.core.array``, a NumPy array, or anything
 ``numpy.asarray`` accepts (lists, CPU torch tensors), in any real dtype, and
 returns ``mlx.core.array`` results (``numpy.asarray`` converts them without a
 copy). ``metric`` and ``algo`` take the enum or its name: ``"l2"``,
-``"cosine"``, ``"inner_product"``; ``"nn_descent"``, ``"brute_force"``.
+``"cosine"``, ``"inner_product"``; ``"nn_descent"``, ``"brute_force"``;
+``"auto"``, ``"single_cta"``, ``"multi_cta"``.
 """
 
 import functools
@@ -14,13 +15,14 @@ import functools
 import mlx.core as mx
 
 from mlxvs import _core
-from mlxvs._core import GraphBuild, Metric
+from mlxvs._core import GraphBuild, Metric, SearchAlgo
 
 __all__ = [
     "CagraIndex",
     "GraphBuild",
     "Metric",
     "NearestNeighbors",
+    "SearchAlgo",
     "all_neighbors",
     "brute_force_knn",
     "cagra_build",
@@ -30,7 +32,7 @@ __all__ = [
     "kmeans_predict",
     "nn_descent",
 ]
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 
 def __getattr__(name):
@@ -136,6 +138,8 @@ def cagra_build(
 
 @functools.wraps(_core.graph_search)
 def graph_search(base, graph, queries, k, metric=Metric.l2, **kwargs):
+    if "algo" in kwargs:
+        kwargs["algo"] = _enum(SearchAlgo, kwargs["algo"])
     return _core.graph_search(
         _array(base), _array(graph), _array(queries), k, _metric(metric), **kwargs
     )

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mlxvs VERSION 0.2.1 LANGUAGES CXX)
+project(mlxvs VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,6 +30,8 @@ add_library(mlxvs STATIC src/knn.cpp src/kmeans.cpp src/nndescent.cpp
                          src/all_neighbors.cpp src/search.cpp src/cagra.cpp)
 target_include_directories(mlxvs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(mlxvs PUBLIC mlx)
+# IOKit: the GPU core count (graph_search picks single- or multi-CTA by it)
+target_link_libraries(mlxvs PUBLIC "-framework IOKit" "-framework CoreFoundation")
 
 if(MLXVS_BUILD_TESTS)
   add_executable(test_knn tests/test_knn.cpp)

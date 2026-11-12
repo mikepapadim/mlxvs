@@ -20,6 +20,8 @@ struct SearchCase {
   int itopk = 64;
   int width = 1;
   double min_recall = 0.95;
+  mlxvs::SearchAlgo algo = mlxvs::SearchAlgo::SingleCta;
+  int team = 0;
 };
 
 // recall@k of graph_search (an id counts when its exact distance reaches the
@@ -39,6 +41,8 @@ static void search_case(
   mlxvs::SearchOptions options;
   options.itopk_size = c.itopk;
   options.search_width = c.width;
+  options.algo = c.algo;
+  options.team_size = c.team;
   auto t0 = std::chrono::steady_clock::now();
   auto got = mlxvs::graph_search(base, graph, queries, c.k, c.metric, options);
   mx::eval(got.ids, got.distances);
@@ -172,6 +176,66 @@ int main() {
 
     auto gc = knn_graph(x, 32, Metric::Cosine);
     search_case({"cosine itopk 64", Metric::Cosine}, host, n, d, qhost, nq, gc);
+
+    // multi-CTA: several threadgroups per query sharing the traversed set
+    const auto mc = mlxvs::SearchAlgo::MultiCta;
+    search_case(
+        {"mc l2 itopk 64", Metric::L2, 10, 64, 1, 0.95, mc},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        g);
+    search_case(
+        {"mc l2 itopk 512", Metric::L2, 10, 512, 1, 0.99, mc},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        g);
+    search_case(
+        {"mc l2 width 4", Metric::L2, 10, 32, 4, 0.95, mc},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        g);
+    search_case(
+        {"mc l2 k=100 itopk 256", Metric::L2, 100, 256, 1, 0.95, mc},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        g);
+    search_case(
+        {"mc l2 graph with holes", Metric::L2, 10, 64, 1, 0.85, mc},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        holes);
+    search_case(
+        {"mc cosine itopk 64", Metric::Cosine, 10, 64, 1, 0.95, mc},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        gc);
+    // a few queries: Auto picks multi-CTA
+    search_case(
+        {"auto l2 nq=8", Metric::L2, 10, 64, 1, 0.9, mlxvs::SearchAlgo::Auto},
+        host,
+        n,
+        d,
+        qhost,
+        8,
+        g);
     auto gi = knn_graph(x, 32, Metric::InnerProduct);
     search_case(
         {"inner itopk 128", Metric::InnerProduct, 10, 128, 1, 0.8},
@@ -196,6 +260,56 @@ int main() {
     mx::array x(host.data(), {n, d}, mx::float32);
     auto g = knn_graph(x, 24, Metric::L2);
     search_case({"l2 d=1500"}, host, n, d, qhost, nq, g);
+    search_case(
+        {"mc l2 d=1500",
+         Metric::L2,
+         10,
+         64,
+         1,
+         0.95,
+         mlxvs::SearchAlgo::MultiCta},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        g);
+  }
+  {
+    // a dimension not a multiple of 4 (the scalar tail of each distance), and
+    // every team size
+    int n = 5000, d = 37, nq = 200;
+    auto all = low_rank(n + nq, d, 8, 13);
+    std::vector<float> host(all.begin(), all.begin() + (size_t)n * d);
+    std::vector<float> qhost(all.begin() + (size_t)n * d, all.end());
+    mx::array x(host.data(), {n, d}, mx::float32);
+    auto g = knn_graph(x, 24, Metric::L2);
+    const auto sc = mlxvs::SearchAlgo::SingleCta;
+    const auto mc = mlxvs::SearchAlgo::MultiCta;
+    search_case(
+        {"l2 d=37 team 4", Metric::L2, 10, 64, 1, 0.95, sc, 4},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        g);
+    search_case(
+        {"l2 d=37 team 32", Metric::L2, 10, 64, 1, 0.95, sc, 32},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        g);
+    search_case(
+        {"mc l2 d=37 team 16", Metric::L2, 10, 64, 1, 0.95, mc, 16},
+        host,
+        n,
+        d,
+        qhost,
+        nq,
+        g);
   }
   {
     // fewer rows than one round's candidates

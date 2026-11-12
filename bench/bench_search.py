@@ -6,8 +6,10 @@ Builds a search graph of the base rows with mlxvs (cagra_build with
 --intermediate, else the k-NN graph of nn_descent, or all_neighbors with
 --clusters), computes the exact neighbors of the queries with
 brute_force_knn, then searches the graph with graph_search at several
-itopk_size values, all queries in one batch. Optionally the same sweep with
-hnswlib (HNSW on the CPU, all cores) at several ef values.
+itopk_size values (and --algo layouts), all queries in one batch. Optionally
+the same sweep with hnswlib (HNSW on the CPU, all cores) at several ef values.
+With --latency N, the first N queries are instead searched one at a time
+(median and p95 latency; hnswlib on one thread).
 
 Recall counts a returned id when its true (float32) distance is at least as
 close as the exact k-th, so ties are not misses.
@@ -63,6 +65,19 @@ def timed(run, runs):
     return out, best
 
 
+def latencies(search, inputs):
+    """Median and p95 milliseconds of searching each one-query input alone, and
+    the ids."""
+    search(inputs[0])  # compile and warm up
+    times, ids = [], []
+    for q in inputs:
+        t0 = time.perf_counter()
+        ids.append(search(q))
+        times.append(time.perf_counter() - t0)
+    ms = 1e3 * np.array(times)
+    return np.median(ms), np.percentile(ms, 95), np.concatenate(ids)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("base", help="base rows, .fvecs")
@@ -85,6 +100,14 @@ def main():
     )
     p.add_argument("--itopk", default="32,64,96,128,192,256")
     p.add_argument("--width", type=int, default=1, help="search_width")
+    p.add_argument(
+        "--algo",
+        default="auto",
+        help="comma-separated search layouts: auto, single_cta, multi_cta",
+    )
+    p.add_argument(
+        "--latency", type=int, default=0, help="time this many queries one at a time"
+    )
     p.add_argument("--nq", type=int, default=0, help="queries used, 0: all")
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--baselines", default="", help="comma-separated: hnswlib")
@@ -125,27 +148,43 @@ def main():
     mx.eval(graph)
     print(f"graph: {how}, degree {a.degree}, {time.perf_counter() - t0:.1f} s\n")
 
-    print(f"{'method':<28} {'param':>6} {'recall@' + str(a.k):>10} {'QPS':>12}")
-    for itopk in [int(s) for s in a.itopk.split(",") if s]:
-        if itopk < a.k:
-            continue
+    if a.latency:
+        nl = min(a.latency, len(queries))
+        lat_q = [mx.array(queries[i : i + 1]) for i in range(nl)]
+        mx.eval(*lat_q)
+        exact_lat = exact_dist[:nl]
+        head = f"{'method':<34} {'param':>6} {'recall@' + str(a.k):>10}"
+        print(f"{head} {'median ms':>10} {'p95 ms':>8}")
+    else:
+        print(f"{'method':<34} {'param':>6} {'recall@' + str(a.k):>10} {'QPS':>12}")
+    for algo in [s for s in a.algo.split(",") if s]:
+        for itopk in [int(s) for s in a.itopk.split(",") if s]:
+            if itopk < a.k or (algo == "single_cta" and itopk > 256):
+                continue  # single-CTA keeps at most 256 entries
+            kw = {"itopk_size": itopk, "search_width": a.width, "algo": algo}
 
-        def run(itopk=itopk):
-            kw = {"itopk_size": itopk, "search_width": a.width}
-            if a.intermediate:
-                ids, dist = index.search(xq, a.k, **kw)
-            else:
-                ids, dist = mlxvs.graph_search(xb, graph, xq, a.k, a.metric, **kw)
-            mx.eval(ids, dist)
-            return ids
+            def search(q, kw=kw):
+                if a.intermediate:
+                    ids, dist = index.search(q, a.k, **kw)
+                else:
+                    ids, dist = mlxvs.graph_search(xb, graph, q, a.k, a.metric, **kw)
+                mx.eval(ids, dist)
+                return np.asarray(ids)
 
-        ids, sec = timed(run, a.runs)
-        # scored by the true distances of the returned ids, so that a float16
-        # dataset's rounded distances do not count near-ties as misses
-        dist = true_dist(a.metric, base, queries, np.asarray(ids))
-        r = recall(a.metric, dist, exact_dist, a.k)
-        name = f"mlxvs graph_search w={a.width}"
-        print(f"{name:<28} {itopk:>6} {r:>10.4f} {len(queries) / sec:>12,.0f}")
+            name = f"mlxvs {algo} w={a.width}"
+            if a.latency:
+                med, p95, ids = latencies(search, lat_q)
+                dist = true_dist(a.metric, base, queries[:nl], ids)
+                r = recall(a.metric, dist, exact_lat, a.k)
+                print(f"{name:<34} {itopk:>6} {r:>10.4f} {med:>10.3f} {p95:>8.3f}")
+                continue
+            ids, sec = timed(lambda: search(xq), a.runs)
+            # scored by the true distances of the returned ids, so that a
+            # float16 dataset's rounded distances do not count near-ties as
+            # misses
+            dist = true_dist(a.metric, base, queries, ids)
+            r = recall(a.metric, dist, exact_dist, a.k)
+            print(f"{name:<34} {itopk:>6} {r:>10.4f} {len(queries) / sec:>12,.0f}")
 
     if "hnswlib" in a.baselines:
         import hnswlib
@@ -159,15 +198,28 @@ def main():
         print(
             f"\nhnswlib build (M={a.degree // 2}, efc 200): {time.perf_counter() - t0:.1f} s"
         )
+        if a.latency:
+            hnsw.set_num_threads(1)
         for ef in [int(s) for s in a.ef.split(",") if s]:
             if ef < a.k:
                 continue
             hnsw.set_ef(ef)
+            if a.latency:
+                med, p95, labels = latencies(
+                    lambda q: hnsw.knn_query(q, k=a.k)[0],
+                    [queries[i : i + 1] for i in range(nl)],
+                )
+                dist = true_dist(a.metric, base, queries[:nl], labels.astype(np.int64))
+                r = recall(a.metric, dist, exact_lat, a.k)
+                print(
+                    f"{'hnswlib (CPU, 1 thread)':<34} {ef:>6} {r:>10.4f} {med:>10.3f} {p95:>8.3f}"
+                )
+                continue
             (labels, _), sec = timed(lambda: hnsw.knn_query(queries, k=a.k), a.runs)
             dist = true_dist(a.metric, base, queries, labels.astype(np.int64))
             r = recall(a.metric, dist, exact_dist, a.k)
             print(
-                f"{'hnswlib (CPU)':<28} {ef:>6} {r:>10.4f} {len(queries) / sec:>12,.0f}"
+                f"{'hnswlib (CPU)':<34} {ef:>6} {r:>10.4f} {len(queries) / sec:>12,.0f}"
             )
 
 

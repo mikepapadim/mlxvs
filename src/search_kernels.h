@@ -38,11 +38,19 @@ inline uint mlxvs_mix(uint x) {
   x ^= x >> 16;
   return x;
 }
-// Score of base row id against the query (larger is closer), summed by one
-// SIMD group: every lane gets the total. metric: 0 inner product, 1 l2 (as
-// minus the squared distance), 2 cosine (inner product times the row's inverse
-// norm).
-template <typename T, typename Q, typename N>
+inline float4 mlxvs_load4(const device float* p) {
+  return float4(*(const device packed_float4*)p);
+}
+inline float4 mlxvs_load4(const device half* p) {
+  return float4(*(const device packed_half4*)p);
+}
+// Score of base row id against the query (larger is closer), computed by a
+// team of TEAM consecutive lanes (CAGRA's team size), four columns per load;
+// every lane of the team gets the total. Every lane of the SIMD group must
+// call it (the sum is a shuffle); inactive teams get 0. metric: 0 inner
+// product, 1 l2 (as minus the squared distance), 2 cosine (inner product times
+// the row's inverse norm).
+template <uint TEAM, typename T, typename Q, typename N>
 inline float mlxvs_score(
     const device T* base,
     Q qv,
@@ -50,16 +58,33 @@ inline float mlxvs_score(
     int id,
     int d,
     int metric,
-    uint lane) {
-  size_t row = (size_t)id * (size_t)d;
+    uint lane,
+    bool active) {
   float acc = 0.0f;
-  for (int j = (int)lane; j < d; j += 32) {
-    float a = qv[j];
-    float b = (float)base[row + j];
-    acc += metric == 1 ? -(a - b) * (a - b) : a * b;
+  if (active) {
+    int tl = (int)(lane % TEAM);
+    const device T* row = base + (size_t)id * (size_t)d;
+    int d4 = d & ~3;
+    for (int j = tl * 4; j < d4; j += (int)TEAM * 4) {
+      float4 b = mlxvs_load4(row + j);
+      float4 a = float4(qv[j], qv[j + 1], qv[j + 2], qv[j + 3]);
+      if (metric == 1) {
+        float4 t = a - b;
+        acc -= dot(t, t);
+      } else {
+        acc += dot(a, b);
+      }
+    }
+    for (int j = d4 + tl; j < d; j += (int)TEAM) {
+      float a = qv[j];
+      float b = (float)row[j];
+      acc += metric == 1 ? -(a - b) * (a - b) : a * b;
+    }
   }
-  acc = simd_sum(acc);
-  return metric == 2 ? acc * inv_norm[id] : acc;
+  for (uint off = TEAM / 2; off > 0; off >>= 1) {
+    acc += simd_shuffle_xor(acc, (ushort)off);
+  }
+  return active && metric == 2 ? acc * inv_norm[id] : acc;
 }
 // Inserts id into the visited set (open addressing, linear probing, empty
 // slots -1). True if it was not there.
@@ -83,6 +108,77 @@ inline bool mlxvs_visit(threadgroup atomic_int* table, uint bits, int id) {
   }
   return false;
 }
+// The traversed set of the multi-CTA search, shared by a query's threadgroups
+// in device memory (open addressing, linear probing): empty slots -1, a removed
+// id stored as -(id + 2), as cuVS's hashmap with removal. True if id was not
+// there (it is now).
+inline bool mlxvs_dev_insert(device atomic_int* table, uint bits, int id) {
+  uint mask = (1u << bits) - 1u;
+  uint at = (mlxvs_mix((uint)id) >> (32u - bits)) & mask;
+  int removed = -id - 2;
+  for (uint probes = 0; probes <= mask;) {
+    int expected = -1;
+    if (atomic_compare_exchange_weak_explicit(
+            &table[at], &expected, id, memory_order_relaxed, memory_order_relaxed)) {
+      return true;
+    }
+    if (expected == id) {
+      return false;
+    }
+    if (expected == removed) {
+      int again = removed;
+      if (atomic_compare_exchange_weak_explicit(
+              &table[at], &again, id, memory_order_relaxed, memory_order_relaxed)) {
+        return true;
+      }
+      if (again == id) {
+        return false;
+      }
+      continue;
+    }
+    if (expected != -1) {
+      at = (at + 1u) & mask;
+      ++probes;
+    }
+  }
+  return false;
+}
+inline bool mlxvs_dev_find(device atomic_int* table, uint bits, int id) {
+  uint mask = (1u << bits) - 1u;
+  uint at = (mlxvs_mix((uint)id) >> (32u - bits)) & mask;
+  for (uint probes = 0; probes <= mask; ++probes) {
+    int v = atomic_load_explicit(&table[at], memory_order_relaxed);
+    if (v == id) {
+      return true;
+    }
+    if (v == -1 || v == -id - 2) {
+      return false;
+    }
+    at = (at + 1u) & mask;
+  }
+  return false;
+}
+inline void mlxvs_dev_remove(device atomic_int* table, uint bits, int id) {
+  uint mask = (1u << bits) - 1u;
+  uint at = (mlxvs_mix((uint)id) >> (32u - bits)) & mask;
+  for (uint probes = 0; probes <= mask;) {
+    int v = atomic_load_explicit(&table[at], memory_order_relaxed);
+    if (v == -1) {
+      return;
+    }
+    if (v == id) {
+      int expected = id;
+      if (atomic_compare_exchange_weak_explicit(
+              &table[at], &expected, -id - 2, memory_order_relaxed, memory_order_relaxed) ||
+          expected != id) {
+        return;
+      }
+      continue;
+    }
+    at = (at + 1u) & mask;
+    ++probes;
+  }
+}
 )";
 
 // One threadgroup of 256 threads per query, as CAGRA's single-CTA search. The
@@ -91,22 +187,23 @@ inline bool mlxvs_visit(threadgroup atomic_int* table, uint bits, int id) {
 // n_rand random nodes. Then each round expands the best unexpanded entries (up
 // to W of them, marked in the list), gathers their graph neighbors, drops the
 // ones already visited (a hash set in threadgroup memory, cleared and refilled
-// with the list's nodes when half full), scores the rest (one SIMD group per
-// candidate), sorts them (bitonic) and merges them into the list (each entry's
-// rank by binary search in the other list). It stops when every entry of the
-// list has been expanded, or after max_iter rounds (cuVS's max_iterations - 1:
-// its first iteration is the random start's).
+// with the list's nodes when half full), scores the rest (one team of TEAM
+// lanes per candidate), sorts them (bitonic) and merges them into the list
+// (each entry's rank by binary search in the other list). It stops when every
+// entry of the list has been expanded, or after max_iter rounds (cuVS's
+// max_iterations - 1: its first iteration is the random start's).
 //
 // template: M (list length, multiple of 32), CP (candidate slots, power of
 // two), QCAP (query floats in threadgroup memory, 1 when read from device),
-// QSHARED, HBITS (log2 of the visited-set slots)
+// QSHARED, HBITS (log2 of the visited-set slots), TEAM (lanes per distance:
+// 4, 8, 16 or 32)
 // inputs: base [n, d] float, graph [n, deg] int, queries [nq, d] float,
 // inv_norm [n] float (cosine only), params [n, d, deg, k, W, max_iter, metric,
 // seed, n_rand, rand_slots] int
 // outputs: out_ids [nq, k] int, out_scores [nq, k] float
 constexpr const char* SEARCH_SOURCE = R"(
   const uint THREADS = 256;
-  const uint SIMDS = THREADS / 32;
+  const uint TEAMS = THREADS / TEAM;
   const uint HSIZE = 1u << HBITS;
   uint q = threadgroup_position_in_grid.x;
   uint lid = thread_position_in_threadgroup.x;
@@ -207,33 +304,30 @@ constexpr const char* SEARCH_SOURCE = R"(
     }
 
     if (random_round) {
-      // each slot: the best of n_rand random nodes, one SIMD group per slot
-      for (uint c = sg; c < CP; c += SIMDS) {
+      // each slot: the best of n_rand random nodes, one team per slot
+      for (uint c0 = 0; c0 < CP; c0 += TEAMS) {
+        uint c = c0 + lid / TEAM;
+        bool active = c < (uint)size;
         float best = -INFINITY;
         int best_id = -1;
-        if (c < (uint)size) {
-          uint slot = (uint)it * CP + c;
-          for (int j = 0; j < n_rand; ++j) {
-            uint g = slot + (uint)rand_slots * (uint)j;
-            uint h = mlxvs_mix(seed ^ mlxvs_mix(q * 0x9e3779b9u + g * 0x85ebca6bu));
-            int node = (int)(h % (uint)n);
-            float sc = QSHARED
-                ? mlxvs_score(base, (threadgroup const float*)qv, inv_norm, node, d, metric, lane)
-                : mlxvs_score(base, queries + qrow, inv_norm, node, d, metric, lane);
-            if (mlxvs_before(sc, node, best, best_id)) {
-              best = sc;
-              best_id = node;
-            }
+        uint slot = (uint)it * CP + c;
+        for (int j = 0; j < n_rand; ++j) {
+          uint g = slot + (uint)rand_slots * (uint)j;
+          uint h = mlxvs_mix(seed ^ mlxvs_mix(q * 0x9e3779b9u + g * 0x85ebca6bu));
+          int node = (int)(h % (uint)n);
+          float sc = QSHARED
+              ? mlxvs_score<TEAM>(base, (threadgroup const float*)qv, inv_norm, node, d, metric, lane, active)
+              : mlxvs_score<TEAM>(base, queries + qrow, inv_norm, node, d, metric, lane, active);
+          if (active && mlxvs_before(sc, node, best, best_id)) {
+            best = sc;
+            best_id = node;
           }
         }
-        bool fresh = false;
-        if (lane == 0 && best_id >= 0) {
-          fresh = mlxvs_visit(visited, HBITS, best_id);
+        if (c < CP && lid % TEAM == 0) {
+          bool fresh = active && best_id >= 0 && mlxvs_visit(visited, HBITS, best_id);
           if (fresh) {
             atomic_fetch_add_explicit(&filled, 1u, memory_order_relaxed);
           }
-        }
-        if (lane == 0) {
           cand_i[c] = fresh ? best_id : -1;
           cand_s[c] = fresh ? best : -INFINITY;
         }
@@ -256,16 +350,14 @@ constexpr const char* SEARCH_SOURCE = R"(
       }
       threadgroup_barrier(mem_flags::mem_threadgroup);
 
-      // scores, one SIMD group per candidate; larger is closer
-      for (uint c = sg; c < CP; c += SIMDS) {
-        int id = cand_i[c];
-        if (id < 0) {
-          continue;
-        }
+      // scores, one team per candidate; larger is closer
+      for (uint c0 = 0; c0 < (uint)size; c0 += TEAMS) {
+        uint c = c0 + lid / TEAM;
+        int id = c < (uint)size ? cand_i[c] : -1;
         float sc = QSHARED
-            ? mlxvs_score(base, (threadgroup const float*)qv, inv_norm, id, d, metric, lane)
-            : mlxvs_score(base, queries + qrow, inv_norm, id, d, metric, lane);
-        if (lane == 0) {
+            ? mlxvs_score<TEAM>(base, (threadgroup const float*)qv, inv_norm, id, d, metric, lane, id >= 0)
+            : mlxvs_score<TEAM>(base, queries + qrow, inv_norm, id, d, metric, lane, id >= 0);
+        if (id >= 0 && lid % TEAM == 0) {
           cand_s[c] = sc;
         }
       }
@@ -349,6 +441,291 @@ constexpr const char* SEARCH_SOURCE = R"(
     bool ok = v >= 0;
     out_ids[(size_t)q * k + i] = v;
     out_scores[(size_t)q * k + i] = metric == 1 ? (ok ? -s : INFINITY) : (ok ? s : -INFINITY);
+  }
+)";
+
+/** Threads per threadgroup (CTA) of the multi-CTA search. */
+constexpr int SEARCH_MC_THREADS = 128;
+/** List entries each threadgroup of the multi-CTA search keeps (cuVS's). */
+constexpr int SEARCH_MC_ITOPK = 32;
+/** The longest buffer (list and one parent's neighbors) of one threadgroup. */
+constexpr int SEARCH_MC_BUFFER_MAX = 256;
+
+// CAGRA's multi-CTA search, as cuVS's search_multi_cta: several threadgroups
+// per query, each with its own list of 32 entries followed by one parent's
+// neighbors (B entries, sorted together), expanding one parent per iteration.
+// A traversed set in device memory, shared by the query's threadgroups, makes
+// each node a parent of one threadgroup only; each threadgroup's visited set
+// (threadgroup memory) is cleared every iteration and refilled with its
+// buffer's nodes. Per iteration: sort the buffer; pick the best entry not
+// expanded yet that the traversed set takes (an entry beyond the list moves
+// into the list's last empty slot; ones another threadgroup took are
+// dropped); drop former parents pushed beyond the list (and from the traversed
+// set); write the parent's neighbors not visited nor traversed over the end
+// of the buffer and score them; drop entries other threadgroups have since
+// expanded. Each threadgroup writes its 32 best (parents, then nodes the
+// traversed set takes, so each node comes from one threadgroup) for the
+// final top-k.
+//
+// template: B (buffer, multiple of 32), BP (power of two >= B), QCAP, QSHARED,
+// VBITS (log2 of the visited-set slots), TEAM
+// inputs: base [n, d] float, graph [n, deg] int, queries [nq, d] float,
+// inv_norm [n] float (cosine only), params [n, d, deg, max_iter, min_iter,
+// metric, seed, n_rand, num_cta, nq, tbits] int
+// outputs (atomic): out_ids [nq, num_cta * 32] int, out_scores [nq, num_cta *
+// 32] float (larger is closer), traversed [nq, 1 << tbits] int (-1 filled)
+constexpr const char* SEARCH_MC_SOURCE = R"(
+  const uint THREADS = 128;
+  const uint TEAMS = THREADS / TEAM;
+  const uint ITOPK = 32;
+  const uint VSIZE = 1u << VBITS;
+  uint cta = threadgroup_position_in_grid.x;
+  uint q = threadgroup_position_in_grid.y;
+  uint lid = thread_position_in_threadgroup.x;
+  uint sg = lid / 32;
+  uint lane = lid % 32;
+  int n = params[0];
+  int d = params[1];
+  int deg = params[2];
+  int max_iter = params[3];
+  int min_iter = params[4];
+  int metric = params[5];
+  uint seed = (uint)params[6];
+  int n_rand = params[7];
+  uint num_cta = (uint)params[8];
+  uint nq = (uint)params[9];
+  uint tbits = (uint)params[10];
+  size_t qrow = (size_t)q * (size_t)d;
+  device atomic_int* trav = traversed + (size_t)q * ((size_t)1 << tbits);
+
+  threadgroup float qv[QCAP];
+  threadgroup atomic_int visited[VSIZE];
+  threadgroup float buf_s[BP];
+  threadgroup int buf_i[BP];
+  threadgroup int parent_slot;
+  threadgroup atomic_int position;
+
+  if (QSHARED) {
+    for (int j = (int)lid; j < d; j += (int)THREADS) {
+      qv[j] = queries[qrow + j];
+    }
+  }
+  for (uint i = lid; i < VSIZE; i += THREADS) {
+    atomic_store_explicit(&visited[i], -1, memory_order_relaxed);
+  }
+  for (uint i = lid; i < BP; i += THREADS) {
+    buf_s[i] = -INFINITY;
+    buf_i[i] = -1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // random start: deg slots, each the best of n_rand random nodes; the
+  // query's threadgroups draw different nodes
+  uint block = cta + num_cta * q;
+  uint blocks = num_cta * nq;
+  for (uint c0 = 0; c0 < (uint)deg; c0 += TEAMS) {
+    uint c = c0 + lid / TEAM;
+    bool active = c < (uint)deg;
+    float best = -INFINITY;
+    int best_id = -1;
+    for (int j = 0; j < n_rand; ++j) {
+      uint g = block + blocks * (c + (uint)deg * (uint)j);
+      int node = (int)(mlxvs_mix(seed ^ mlxvs_mix(g)) % (uint)n);
+      float sc = QSHARED
+          ? mlxvs_score<TEAM>(base, (threadgroup const float*)qv, inv_norm, node, d, metric, lane, active)
+          : mlxvs_score<TEAM>(base, queries + qrow, inv_norm, node, d, metric, lane, active);
+      if (active && mlxvs_before(sc, node, best, best_id)) {
+        best = sc;
+        best_id = node;
+      }
+    }
+    if (active && lid % TEAM == 0) {
+      bool ok = best_id >= 0 && mlxvs_visit(visited, VBITS, best_id) &&
+          !mlxvs_dev_find(trav, tbits, best_id);
+      buf_i[c] = ok ? best_id : -1;
+      buf_s[c] = ok ? best : -INFINITY;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  for (int it = 0;; ++it) {
+    // sort the buffer, best first (one SIMD group)
+    if (sg == 0) {
+      for (uint span = 2; span <= BP; span <<= 1) {
+        for (uint stride = span >> 1; stride > 0; stride >>= 1) {
+          for (uint i = lane; i < BP; i += 32) {
+            uint j = i ^ stride;
+            if (j > i) {
+              bool forward = (i & span) == 0;
+              float si = buf_s[i];
+              float sj = buf_s[j];
+              int ii = buf_i[i];
+              int ij = buf_i[j];
+              if (forward != mlxvs_before(si, mlxvs_node(ii), sj, mlxvs_node(ij))) {
+                buf_s[i] = sj;
+                buf_s[j] = si;
+                buf_i[i] = ij;
+                buf_i[j] = ii;
+              }
+            }
+          }
+          simdgroup_barrier(mem_flags::mem_threadgroup);
+        }
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (it + 1 >= max_iter) {
+      break;
+    }
+
+    if (sg == 0) {
+      // the next parent: the best unexpanded entry of the first 64 that the
+      // traversed set takes
+      if (lane == 0) {
+        parent_slot = -1;
+      }
+      simdgroup_barrier(mem_flags::mem_threadgroup);
+      int free_slot = -1;
+      bool done = false;
+      for (uint w = 0; w < 2 && !done; ++w) {
+        uint i = w * 32 + lane;
+        int v = buf_i[i];
+        bool invalid = v == -1;
+        bool cand = v >= 0;
+        uint cid = simd_prefix_exclusive_sum(cand ? 1u : 0u);
+        uint total = simd_sum(cand ? 1u : 0u);
+        for (uint t = 0; t < total; ++t) {
+          bool taken = false;
+          if (cand && cid == t) {
+            cand = false;
+            if (mlxvs_dev_insert(trav, tbits, v)) {
+              if (i < ITOPK) {
+                parent_slot = (int)i;
+                buf_i[i] = -v - 2;
+              } else {
+                parent_slot = free_slot;
+                buf_i[free_slot] = -v - 2;
+                buf_s[free_slot] = buf_s[i];
+                buf_i[i] = -1;
+                buf_s[i] = -INFINITY;
+              }
+              taken = true;
+            } else {
+              // another threadgroup expanded it
+              buf_i[i] = -1;
+              buf_s[i] = -INFINITY;
+              invalid = true;
+            }
+          }
+          if (simd_any(taken)) {
+            done = true;
+            break;
+          }
+        }
+        if (!done && w == 0) {
+          free_slot = simd_max(invalid ? (int)lane : -1);
+          done = free_slot < 0;
+        }
+      }
+    } else {
+      for (uint i = lid - 32; i < VSIZE; i += THREADS - 32) {
+        atomic_store_explicit(&visited[i], -1, memory_order_relaxed);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    int ps = parent_slot;
+    if (ps < 0 && it >= min_iter) {
+      break;
+    }
+
+    // former parents beyond the list leave the traversed set; the rest of
+    // the buffer refills the visited set
+    for (uint i = lid; i < B; i += THREADS) {
+      int v = buf_i[i];
+      if (v == -1) {
+        continue;
+      }
+      if (i >= ITOPK && v < -1) {
+        mlxvs_dev_remove(trav, tbits, -v - 2);
+        buf_i[i] = -1;
+        buf_s[i] = -INFINITY;
+      } else {
+        mlxvs_visit(visited, VBITS, mlxvs_node(v));
+      }
+    }
+    if (lid == 0) {
+      atomic_store_explicit(&position, (int)B, memory_order_relaxed);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // the parent's neighbors, written from the end of the buffer
+    if (ps >= 0) {
+      int p = mlxvs_node(buf_i[ps]);
+      for (uint c = lid; c < (uint)deg; c += THREADS) {
+        int child = graph[(size_t)p * (size_t)deg + c];
+        if (child >= 0 && child < n && mlxvs_visit(visited, VBITS, child) &&
+            !mlxvs_dev_find(trav, tbits, child)) {
+          int j = atomic_fetch_sub_explicit(&position, 1, memory_order_relaxed) - 1;
+          buf_i[j] = child;
+        }
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint start = (uint)atomic_load_explicit(&position, memory_order_relaxed);
+    for (uint j0 = start; j0 < B; j0 += TEAMS) {
+      uint j = j0 + lid / TEAM;
+      bool active = j < B;
+      int id = active ? buf_i[j] : 0;
+      float sc = QSHARED
+          ? mlxvs_score<TEAM>(base, (threadgroup const float*)qv, inv_norm, id, d, metric, lane, active)
+          : mlxvs_score<TEAM>(base, queries + qrow, inv_norm, id, d, metric, lane, active);
+      if (active && lid % TEAM == 0) {
+        buf_s[j] = sc;
+      }
+    }
+    // entries other threadgroups have expanded since
+    for (uint i = lid; i < start; i += THREADS) {
+      int v = buf_i[i];
+      if (v >= 0 && mlxvs_dev_find(trav, tbits, v)) {
+        buf_i[i] = -1;
+        buf_s[i] = -INFINITY;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  // this threadgroup's best 32: its parents, and nodes no other threadgroup
+  // has written (claimed in the traversed set)
+  if (sg == 0) {
+    size_t out = ((size_t)q * num_cta + cta) * ITOPK;
+    uint offset = 0;
+    for (uint b = 0; b < B; b += 32) {
+      uint i = b + lane;
+      int v = buf_i[i];
+      bool valid = false;
+      int node = -1;
+      if (v < -1) {
+        valid = true;
+        node = -v - 2;
+      } else if (v >= 0 && offset < ITOPK && mlxvs_dev_insert(trav, tbits, v)) {
+        valid = true;
+        node = v;
+      }
+      uint j = offset + simd_prefix_exclusive_sum(valid ? 1u : 0u);
+      if (valid) {
+        if (j < ITOPK) {
+          atomic_store_explicit(&out_ids[out + j], node, memory_order_relaxed);
+          atomic_store_explicit(&out_scores[out + j], buf_s[i], memory_order_relaxed);
+        } else {
+          mlxvs_dev_remove(trav, tbits, node);
+        }
+      }
+      offset += simd_sum(valid ? 1u : 0u);
+    }
+    for (uint i = offset + lane; i < ITOPK; i += 32) {
+      atomic_store_explicit(&out_ids[out + i], -1, memory_order_relaxed);
+      atomic_store_explicit(&out_scores[out + i], -INFINITY, memory_order_relaxed);
+    }
   }
 )";
 

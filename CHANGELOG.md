@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0 (2026-11-12)
+
+- `graph_search` multi-CTA, as cuVS's `search_multi_cta`: `max(search_width, itopk_size / 32)` threadgroups per
+  query, each a list of 32 expanding one node per iteration, sharing the set of expanded nodes in device memory; a
+  top-k over their lists gives the result. `algo="auto"` (default) picks it as cuVS does: for fewer than two queries
+  per GPU core (read from IOKit) or `itopk_size` over 256 (up to 1024). One SIFT1M query: 0.45 ms at recall@10
+  0.996 to 0.999, where single-CTA took 2.2 ms for 0.999 and hnswlib on one core 0.62 ms for 0.998.
+- Distances by teams of lanes, as CAGRA: 4 to 32 lanes per candidate, four columns per load (`team_size`, by
+  default chosen from the dimension as cuVS). Batches about twice as fast: SIFT1M 143,300 queries/s at recall@10
+  0.980 (was 76,400 at 0.976), ada-002 1M 14,400 at 0.979 (was 10,000).
+- `graph_search` options `algo`, `team_size` and `min_iterations`, as cuVS's `search_params`; `SearchAlgo` enum.
+- `CagraIndex.save_jvector`: the index in JVector's on-disk format (format 6, JVector 4.0), searchable from Java;
+  `examples/jvector` loads and searches it with JVector 4.0.2 (SIFT1M recall@10 0.994 with `rerankK` 128).
+- `bench_search.py --algo` and `--latency N` (queries one at a time, against hnswlib on one thread);
+  `bench/plot_bench.py` draws the README chart from its output.
+
 ## 0.2.1 (2026-11-12)
 
 Closer to CAGRA (Ootomo et al., arXiv:2308.15136) as cuVS implements it:

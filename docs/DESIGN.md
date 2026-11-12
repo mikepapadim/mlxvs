@@ -44,7 +44,20 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   them one SIMD group per candidate, sorts them (bitonic) and merges them into the list: each entry's place is its
   index plus the number of entries of the other list before it, found by binary search. When the visited set is half
   full it is cleared and refilled with the list's nodes, as CAGRA's small-hash mode. The search ends when every list
-  entry is expanded, or after cuVS's `max_iterations`. Everything stays within 16 KB of threadgroup memory where it can: Metal allows 32 KB, but its
+  entry is expanded, or after cuVS's `max_iterations`. Distances are computed by teams of lanes, as CAGRA: a team of
+  4 to 32 lanes (by default 8 near d = 128, 16 near 256, 32 from 384 up, as cuVS picks) scores one candidate, each
+  lane loading four columns at a time, and the team sums with SIMD shuffles; a SIMD group scores 32 / team
+  candidates at once, which keeps more row reads in flight than one SIMD group per candidate.
+- `graph_search` multi-CTA (`algo="multi_cta"`, or `"auto"` with fewer than two queries per GPU core, as cuVS
+  decides by its SM count; the core count comes from IOKit): `max(search_width, itopk_size / 32)` threadgroups of
+  128 threads per query, as cuVS's `search_multi_cta`. Each keeps a buffer of its 32-entry list plus one parent's
+  neighbors, sorted together by one SIMD group (bitonic in threadgroup memory). Per iteration a threadgroup claims
+  one parent in a traversed set in device memory shared by the query's threadgroups (open addressing with
+  removal: a removed id is stored as `-(id + 2)`), so no node is expanded twice; former parents pushed out of the
+  list leave the set; its own visited set is cleared and refilled from its buffer every iteration; children not
+  visited nor traversed are written over the end of the buffer and scored; entries other threadgroups have since
+  expanded are dropped. At the end each threadgroup writes its 32 best (claiming the non-parents in the traversed
+  set, so each node comes from one threadgroup) and a top-k over all of them gives the result. Everything stays within 16 KB of threadgroup memory where it can: Metal allows 32 KB, but its
   shader validation (run in CI) keeps a shadow copy and counts every byte twice.
 - `cagra_optimize`: five kernels. Prune: one threadgroup per node X loads N(X) into a threadgroup id -> rank table,
   then for every pair (i, r) reads Y = N(N(X)[i])[r] and, if Y is in N(X) at rank j > max(i, r), counts a detour

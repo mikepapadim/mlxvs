@@ -273,16 +273,43 @@ MLXVS_API mx::array cagra_build(
     const CagraOptions& options = {},
     mx::StreamOrDevice s = {});
 
+/** How graph_search lays out a query's work, as cuVS's cagra::search_algo. */
+enum class SearchAlgo {
+  /**
+   * As cuVS: SingleCta for at least two queries per GPU core (and itopk_size at
+   * most 256), else MultiCta.
+   */
+  Auto,
+  /** One threadgroup per query: throughput for large batches. */
+  SingleCta,
+  /**
+   * max(search_width, itopk_size / 32) threadgroups per query, each keeping 32
+   * entries and expanding one node per iteration: latency for small batches,
+   * and itopk_size beyond 256.
+   */
+  MultiCta,
+};
+
 /** Options of graph_search, named after cuVS's cagra::search_params. */
 struct SearchOptions {
+  SearchAlgo algo = SearchAlgo::Auto;
+
   /**
    * Length of each query's internal sorted list (rounded up to a multiple of
-   * 32, at least k, at most 256). Longer: higher recall, slower.
+   * 32, at least k; at most 256 with SingleCta, 1024 with MultiCta). Longer:
+   * higher recall, slower.
    */
   int itopk_size = 64;
 
   /** Nodes expanded per round. search_width * graph degree <= 512. */
   int search_width = 1;
+
+  /**
+   * Lanes computing one distance (4, 8, 16 or 32), each loading four columns
+   * at a time. 0: as cuVS, by the dimension (8 near 128, 16 near 256, 32 from
+   * 384 up).
+   */
+  int team_size = 0;
 
   /**
    * The most iterations, the random start counting as the first, as cuVS. 0:
@@ -292,8 +319,15 @@ struct SearchOptions {
   int max_iterations = 0;
 
   /**
-   * The random start fills itopk_size + search_width * degree slots, each with
-   * the nearest of this many random nodes (cuVS's distillation).
+   * The fewest iterations: a search does not end earlier for lack of nodes to
+   * expand.
+   */
+  int min_iterations = 0;
+
+  /**
+   * The random start fills itopk_size + search_width * degree slots (degree
+   * per threadgroup with MultiCta), each with the nearest of this many random
+   * nodes (cuVS's distillation).
    */
   int num_random_samplings = 1;
 
@@ -303,10 +337,13 @@ struct SearchOptions {
 /**
  * Approximate k-nearest neighbors of every row of queries [nq, d] among the
  * rows of base [n, d] by a greedy search of graph [n, degree] (the neighbor ids
- * of every base row; -1 entries are skipped), as CAGRA's single-CTA search: one
+ * of every base row; -1 entries are skipped), as CAGRA. Single-CTA: one
  * threadgroup per query keeps a sorted list of itopk_size nodes, starts from
  * random nodes and repeatedly expands the best unexpanded ones until all are
- * expanded or max_iterations is reached. Works on any fixed-degree graph:
+ * expanded or max_iterations is reached. Multi-CTA: several threadgroups per
+ * query, each a list of 32 expanding one node per iteration, sharing the set
+ * of expanded nodes; the result is the best k of their lists. Multi-CTA needs
+ * degree <= 224. Works on any fixed-degree graph:
  * nn_descent's or all_neighbors's k-NN graph, or a pruned one. Returns ids and
  * distances as brute_force_knn. base may be float16 (read as is: half the
  * memory traffic) or any real dtype (converted to float32 on every call). For

@@ -25,6 +25,12 @@ NB_MODULE(_core, m) {
       .value("brute_force", mlxvs::GraphBuild::BruteForce)
       .value("nn_descent", mlxvs::GraphBuild::NnDescent);
 
+  nb::enum_<mlxvs::SearchAlgo>(
+      m, "SearchAlgo", "How graph_search lays out a query's work.")
+      .value("auto", mlxvs::SearchAlgo::Auto)
+      .value("single_cta", mlxvs::SearchAlgo::SingleCta)
+      .value("multi_cta", mlxvs::SearchAlgo::MultiCta);
+
   m.def(
       "brute_force_knn",
       [](const mx::array& base,
@@ -220,14 +226,20 @@ NB_MODULE(_core, m) {
          mlxvs::Metric metric,
          int itopk_size,
          int search_width,
+         mlxvs::SearchAlgo algo,
+         int team_size,
          int max_iterations,
+         int min_iterations,
          int num_random_samplings,
          unsigned long long seed,
          mx::StreamOrDevice s) {
         mlxvs::SearchOptions options;
+        options.algo = algo;
+        options.team_size = team_size;
         options.itopk_size = itopk_size;
         options.search_width = search_width;
         options.max_iterations = max_iterations;
+        options.min_iterations = min_iterations;
         options.num_random_samplings = num_random_samplings;
         options.seed = seed;
         auto r =
@@ -242,18 +254,23 @@ NB_MODULE(_core, m) {
       nb::kw_only(),
       "itopk_size"_a = 64,
       "search_width"_a = 1,
+      "algo"_a = mlxvs::SearchAlgo::Auto,
+      "team_size"_a = 0,
       "max_iterations"_a = 0,
+      "min_iterations"_a = 0,
       "num_random_samplings"_a = 1,
       "seed"_a = 0x128394,
       "stream"_a = nb::none(),
       R"(
         Approximate k-nearest neighbors of every query by searching a graph.
 
-        CAGRA's single-CTA search: one threadgroup per query keeps a sorted
+        CAGRA's search. Single-CTA: one threadgroup per query keeps a sorted
         list of ``itopk_size`` nodes, starts from random nodes and expands the
         best unexpanded ones (``search_width`` per round) until every node of
-        the list has been expanded. Parameters follow cuVS's
-        ``cagra.SearchParams``. Any fixed-degree graph works: the k-NN graph of
+        the list has been expanded. Multi-CTA: ``max(search_width, itopk_size
+        / 32)`` threadgroups per query, each a list of 32 expanding one node
+        per iteration, sharing the set of expanded nodes: lower latency for a
+        few queries. Parameters follow cuVS's ``cagra.SearchParams``. Any fixed-degree graph works: the k-NN graph of
         ``nn_descent`` or ``all_neighbors``, or a pruned one.
 
         Args:
@@ -264,11 +281,18 @@ NB_MODULE(_core, m) {
             k (int): Neighbors per query, at most ``itopk_size``.
             metric (Metric): ``inner_product``, ``l2`` (squared) or ``cosine``.
             itopk_size (int): Length of the internal list (rounded up to a
-              multiple of 32, at most 256). Longer: higher recall, slower.
+              multiple of 32; at most 256 single-CTA, 1024 multi-CTA). Longer:
+              higher recall, slower.
             search_width (int): Nodes expanded per round;
               ``search_width * degree <= 512``.
+            algo (SearchAlgo): ``"auto"`` (as cuVS: single-CTA for at least
+              two queries per GPU core and ``itopk_size <= 256``),
+              ``"single_cta"`` or ``"multi_cta"`` (graph degree at most 224).
+            team_size (int): Lanes per distance, 4, 8, 16 or 32; 0: by the
+              dimension, as cuVS.
             max_iterations (int): The most iterations, the random start
               counting as the first; 0: automatic, as cuVS.
+            min_iterations (int): The fewest iterations.
             num_random_samplings (int): Each random start slot takes the
               nearest of this many random nodes.
             seed (int): Seed of the random start nodes.

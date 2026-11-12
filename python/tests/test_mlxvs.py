@@ -318,15 +318,16 @@ def test_all_neighbors_memmap_out_of_core(tmp_path):
     assert (np.array(a) == np.array(b)).mean() > 0.999
 
 
+@pytest.mark.parametrize("algo", ["single_cta", "multi_cta"])
 @pytest.mark.parametrize("metric", ["l2", "cosine", "inner_product"])
-def test_graph_search_recall(metric):
+def test_graph_search_recall(metric, algo):
     rng = np.random.default_rng(3)
     z = rng.standard_normal((8200, 8)).astype(np.float32)
     x = z @ rng.standard_normal((8, 32)).astype(np.float32)
     x += 0.05 * rng.standard_normal(x.shape).astype(np.float32)
     base, queries = x[:8000], x[8000:]
     graph, _ = mlxvs.all_neighbors(base, 24, metric, algo="brute_force", n_clusters=1)
-    ids, dist = mlxvs.graph_search(base, graph, queries, 10, metric)
+    ids, dist = mlxvs.graph_search(base, graph, queries, 10, metric, algo=algo)
     exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
     ids, exact = np.asarray(ids), np.asarray(exact)
     recall = np.mean([len(set(a) & set(b)) / 10 for a, b in zip(ids, exact)])
@@ -347,7 +348,11 @@ def test_graph_search_numpy_graph_and_errors():
     with pytest.raises(ValueError):
         mlxvs.graph_search(x, graph, x[:5], 5, search_width=64)
     with pytest.raises(ValueError):
-        mlxvs.graph_search(x, graph, x[:5], 300)
+        mlxvs.graph_search(x, graph, x[:5], 300, algo="single_cta")
+    with pytest.raises(ValueError):
+        mlxvs.graph_search(x, graph, x[:5], 2000)
+    with pytest.raises(ValueError):
+        mlxvs.graph_search(x, graph, x[:5], 5, algo="sideways")
 
 
 def test_cagra_build_searches_better_than_knn_graph():
@@ -452,3 +457,42 @@ def test_cagra_index_save_hnswlib(tmp_path, metric, space):
     labels, _ = p.knn_query(queries, k=10)
     exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
     assert _recall(labels, exact) > 0.9
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+def test_cagra_index_save_jvector(tmp_path, metric):
+    # the layout JVector 4's OnDiskGraphIndex (format 6) reads, big-endian;
+    # searched from Java in examples/jvector
+    base = _low_rank(3000)
+    index = mlxvs.CagraIndex.build(base, 16, metric)
+    path = tmp_path / "index.jvector"
+    index.save_jvector(str(path))
+    raw = path.read_bytes()
+    n, d, degree = len(index), index.dim, index.graph_degree
+    words = 8 + 64 + 2
+    header = np.frombuffer(raw[: 4 * words], dtype=">u4")
+    assert header[0] == 0xFFFF0D61 and header[1] == 6
+    assert list(header[2:8]) == [n, d, header[4], degree, n, 1]
+    assert 0 <= header[4] < n  # the entry node
+    assert list(header[8:10]) == [n, degree] and not header[10:72].any()
+    assert list(header[72:]) == [1, 0]  # one feature: INLINE_VECTORS
+    record = np.dtype(
+        [
+            ("ordinal", ">i4"),
+            ("row", ">f4", (d,)),
+            ("count", ">i4"),
+            ("nbr", ">i4", (degree,)),
+        ]
+    )
+    nodes = np.frombuffer(raw, dtype=record, count=n, offset=4 * words)
+    assert (nodes["ordinal"] == np.arange(n)).all()
+    np.testing.assert_array_equal(nodes["row"], np.asarray(index.dataset))
+    graph = np.asarray(index.graph)
+    assert (nodes["count"] == (graph >= 0).sum(1)).all()
+    np.testing.assert_array_equal(np.sort(nodes["nbr"], 1), np.sort(graph, 1))
+    footer = 4 * words + nodes.nbytes
+    assert raw[footer : footer + 4 * words] == raw[: 4 * words]
+    tail = raw[footer + 4 * words :]
+    assert len(tail) == 12
+    assert np.frombuffer(tail[:8], dtype=">i8")[0] == footer
+    assert np.frombuffer(tail[8:], dtype=">u4")[0] == 0x4A564244
