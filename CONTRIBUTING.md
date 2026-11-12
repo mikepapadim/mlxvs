@@ -8,7 +8,7 @@ C++ library, tests and benchmarks (Homebrew's MLX):
 brew install mlx cmake
 cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/homebrew
 cmake --build build
-ctest --test-dir build      # exact k-NN vs a CPU reference; NN-Descent and all-neighbors recall vs exact k-NN
+ctest --test-dir build      # exact k-NN vs a CPU reference; graph recall vs exact k-NN; the C API
 ```
 
 Run the tests under Metal's API and shader validation, as CI does, when you change a kernel: it catches

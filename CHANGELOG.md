@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 (2026-11-12)
+
+- A C API, `include/mlxvs/mlxvs_c.h` in `libmlxvs_c.dylib`: an index handle (`mlxvs_index_build`, `_search`,
+  `_save`, `_load`, `_from_graph`, `_graph`), `mlxvs_brute_force_knn`, parameter structs with cuVS's defaults,
+  status codes and `mlxvs_last_error`. Only the `mlxvs_*` symbols are exported. Indexes are `CagraIndex`'s
+  `.safetensors` files: built in Python, they load in C, and the other way round.
+- `examples/java_ffm`: mlxvs from Java 22+ through the Foreign Function and Memory API, no JNI.
+- `cmake --install` installs the C library and header.
+
 ## 0.4.0 (2026-11-12)
 
 - `vamana_prune`: Vamana's robust pruning with JVector's diversity rule (`VamanaDiversityProvider`: passes with

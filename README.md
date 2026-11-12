@@ -44,7 +44,7 @@ deduplication, for exact k-NN ground truth, or as the build step of a graph inde
 | `CagraIndex.save_jvector(path)` | The index in JVector's on-disk format (`OnDiskGraphIndex`, JVector 4): build on the GPU, search from Java; see [examples/jvector](examples/jvector) | |
 | `NearestNeighbors(n_neighbors).fit(X).kneighbors(Q)` | scikit-learn's interface over the above, NumPy in and out | |
 
-Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: a C API; see
+Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. A C API for other languages. Next: see
 [Roadmap](#roadmap).
 
 ## 1. Install
@@ -118,8 +118,9 @@ distances, indices = nn.kneighbors(queries)   # NumPy arrays, scikit-learn's uni
 distances, indices = nn.kneighbors()          # the base rows' own neighbors
 ```
 
-Examples: [UMAP from a GPU k-NN graph](examples/umap_knn.py) and
-[exact ground truth for an ANN benchmark](examples/ground_truth.py) (`.fvecs` in, `.ivecs` out).
+Examples: [UMAP from a GPU k-NN graph](examples/umap_knn.py),
+[exact ground truth for an ANN benchmark](examples/ground_truth.py) (`.fvecs` in, `.ivecs` out), and
+[build on the GPU, search with JVector](examples/jvector) (`index.save_jvector`).
 
 C++: the same functions in [`include/mlxvs/mlxvs.h`](include/mlxvs/mlxvs.h), taking `mx::array` and a trailing
 `mx::StreamOrDevice s = {}` as MLX ops do. In CMake (MLX found through `CMAKE_PREFIX_PATH`, e.g. Homebrew's):
@@ -128,6 +129,23 @@ C++: the same functions in [`include/mlxvs/mlxvs.h`](include/mlxvs/mlxvs.h), tak
 add_subdirectory(mlxvs)          # or FetchContent
 target_link_libraries(app PRIVATE mlxvs)
 ```
+
+C, and anything that calls C (Java, Rust, Go, Swift): [`include/mlxvs/mlxvs_c.h`](include/mlxvs/mlxvs_c.h) in
+`libmlxvs_c.dylib` (built by `cmake --build build`, installed by `cmake --install build`). An index is a handle:
+build, search, save and load it, with host arrays in and out. Its `.safetensors` files are `CagraIndex`'s, so an
+index built in Python loads in C and the other way round.
+
+```c
+mlxvs_index index;
+mlxvs_index_build(rows, n, d, MLXVS_COSINE, NULL, &index);     /* NULL: default parameters */
+mlxvs_index_search(index, queries, nq, 10, NULL, ids, distances);
+mlxvs_index_save(index, "index.safetensors");
+mlxvs_index_free(index);                       /* errors: nonzero status, mlxvs_last_error() */
+```
+
+From Java 22+ without JNI, through the Foreign Function and Memory API:
+[examples/java_ffm](examples/java_ffm/MlxvsExample.java)
+(`java --enable-native-access=ALL-UNNAMED examples/java_ffm/MlxvsExample.java build/libmlxvs_c.dylib`).
 
 ## 3. Run the benchmarks
 
@@ -229,10 +247,10 @@ from `bench_search.py`'s output.
 
 ## Roadmap
 
-1. A C API for other languages (Java via Panama, as cuVS-java does).
-2. Vamana from search-path candidates, as DiskANN: pruned from k-NN lists only, `vamana_build`'s graph is a little
+1. Vamana from search-path candidates, as DiskANN: pruned from k-NN lists only, `vamana_build`'s graph is a little
    behind CAGRA's (SIFT1M, degree 32: recall@10 0.977 against 0.982 at `itopk_size` 64).
-3. int8 datasets; filtered search; seed nodes.
+2. int8 datasets; filtered search; seed nodes.
+3. `save_hnswlib` and `save_jvector` in the C API.
 
 How the kernels work: [docs/DESIGN.md](docs/DESIGN.md). Building, testing and code style:
 [CONTRIBUTING.md](CONTRIBUTING.md).
