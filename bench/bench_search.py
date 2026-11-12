@@ -95,7 +95,7 @@ def main():
     p.add_argument(
         "--dtype",
         default="float32",
-        choices=["float32", "float16"],
+        choices=["float32", "float16", "uint8", "int8"],
         help="CagraIndex dataset dtype (with --intermediate)",
     )
     p.add_argument("--itopk", default="32,64,96,128,192,256")

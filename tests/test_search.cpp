@@ -384,6 +384,45 @@ int main() {
     }
   }
   {
+    // uint8 and int8 rows read as they are: the same results as float32
+    int n = 10000, d = 40, nq = 300, k = 10;
+    auto all = low_rank(n + nq, d, 8, 29);
+    std::vector<float> ints(all.size());
+    for (size_t i = 0; i < all.size(); ++i) {
+      ints[i] = std::round(std::clamp(20.0f * all[i], -127.0f, 127.0f));
+    }
+    mx::array x(ints.data(), {n, d}, mx::float32);
+    mx::array q(ints.data() + (size_t)n * d, {nq, d}, mx::float32);
+    auto g = knn_graph(x, 24, Metric::L2);
+    auto ref = mlxvs::graph_search(x, g, q, k, Metric::L2);
+    mx::eval(ref.ids);
+    struct {
+      const char* name;
+      mx::array rows;
+    } cases[] = {
+        {"int8", mx::astype(x, mx::int8)},
+        {"uint8", mx::astype(x + mx::array(128.0f), mx::uint8)},
+    };
+    for (auto& c : cases) {
+      // uint8 rows are shifted by 128: so are the queries, distances unchanged
+      auto qc = std::string(c.name) == "uint8" ? q + mx::array(128.0f) : q;
+      auto got = mlxvs::graph_search(c.rows, g, qc, k, Metric::L2);
+      mx::eval(got.ids);
+      long same = 0;
+      for (int i = 0; i < nq * k; ++i) {
+        same += got.ids.data<int>()[i] == ref.ids.data<int>()[i];
+      }
+      bool ok = same >= (long)nq * k * 99 / 100;
+      std::printf(
+          "%-6s %s rows: %ld/%d ids as float32\n",
+          ok ? "PASS" : "FAIL",
+          c.name,
+          same,
+          nq * k);
+      check(ok, "byte rows");
+    }
+  }
+  {
     // a dimension not a multiple of 4 (the scalar tail of each distance), and
     // every team size
     int n = 5000, d = 37, nq = 200;

@@ -415,8 +415,9 @@ struct SearchOptions {
  * of expanded nodes; the result is the best k of their lists. Multi-CTA needs
  * degree <= 224. Works on any fixed-degree graph:
  * nn_descent's or all_neighbors's k-NN graph, or a pruned one. Returns ids and
- * distances as brute_force_knn. base may be float16 (read as is: half the
- * memory traffic) or any real dtype (converted to float32 on every call). For
+ * distances as brute_force_knn. base may be float16, int8 or uint8 (read as
+ * is: half or a quarter of the memory traffic, as cuVS's datasets) or any real
+ * dtype (converted to float32 on every call). For
  * Cosine, the base row norms are computed on every call; normalized rows with
  * InnerProduct avoid that. Runs on the GPU.
  */

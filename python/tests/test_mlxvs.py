@@ -559,3 +559,19 @@ def test_graph_search_seeds():
             queries, 5, algo=algo, max_iterations=1, seeds=np.asarray(nearest)
         )
         assert (np.asarray(ids)[:, 0] == np.asarray(nearest)[:, 0]).all()
+
+
+@pytest.mark.parametrize("dtype,shift", [("uint8", 128), ("int8", 0)])
+def test_cagra_index_byte_rows(tmp_path, dtype, shift):
+    x = np.clip(np.round(10 * _low_rank(5100)), -127, 127) + shift
+    base, queries = x[:5000], x[5000:]
+    index = mlxvs.CagraIndex.build(base, 16, dtype=dtype)
+    assert index.dtype == getattr(mx, dtype)
+    ids, _ = index.search(queries, 10)
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10)
+    assert _recall(ids, exact) > 0.95
+    path = str(tmp_path / "bytes.safetensors")
+    index.save(path)
+    assert mlxvs.CagraIndex.load(path).dtype == index.dtype
+    with pytest.raises(ValueError):
+        mlxvs.CagraIndex.build(base + 0.5, 16, dtype=dtype)  # not integers

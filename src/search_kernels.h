@@ -49,6 +49,12 @@ inline float4 mlxvs_load4(const device float* p) {
 inline float4 mlxvs_load4(const device half* p) {
   return float4(*(const device packed_half4*)p);
 }
+inline float4 mlxvs_load4(const device int8_t* p) {
+  return float4(*(const device packed_char4*)p);
+}
+inline float4 mlxvs_load4(const device uint8_t* p) {
+  return float4(*(const device packed_uchar4*)p);
+}
 // Score of base row id against the query (larger is closer), computed by a
 // team of TEAM consecutive lanes (CAGRA's team size), four columns per load;
 // every lane of the team gets the total. Every lane of the SIMD group must

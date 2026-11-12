@@ -355,9 +355,12 @@ Neighbors graph_search(
     mx::StreamOrDevice s) {
   const char* op = "mlxvs::graph_search";
   mx::StreamContext context(detail::gpu_stream(s, op));
-  // float16 rows are read as they are (half the memory traffic); other dtypes
-  // are converted to float32
-  auto base = base_in.ndim() == 2 && base_in.dtype() == mx::float16
+  // float16, int8 and uint8 rows are read as they are (half or a quarter of
+  // the memory traffic), as cuVS's datasets; other dtypes are converted to
+  // float32
+  auto as_is = base_in.dtype() == mx::float16 || base_in.dtype() == mx::int8 ||
+      base_in.dtype() == mx::uint8;
+  auto base = base_in.ndim() == 2 && as_is
       ? base_in
       : detail::float_rows(base_in, op, "base");
   auto queries = detail::float_rows(queries_in, op, "queries");

@@ -82,7 +82,7 @@ graph, graph_dist = mlxvs.nn_descent(base, k=32, metric="cosine")
 graph, graph_dist = mlxvs.all_neighbors(base, k=32, metric="cosine")
 
 # a search index: the k-NN graph pruned by CAGRA's rules, with the rows stored for search
-# (float16: half the memory); itopk_size trades speed for recall
+# (float16: half the memory; "uint8" / "int8" for byte data); itopk_size trades speed for recall
 index = mlxvs.CagraIndex.build(base, graph_degree=32, metric="cosine", dtype="float16")
 ids, sims = index.search(queries, k=10, itopk_size=64)
 index.save("index.safetensors")
@@ -253,7 +253,7 @@ from `bench_search.py`'s output.
 
 ## Roadmap
 
-1. int8 datasets; per-query filters (cuVS's bitmap).
+1. Per-query filters (cuVS's bitmap); byte datasets in the C API.
 2. `save_hnswlib` and `save_jvector` in the C API.
 
 Tried and left out: Vamana graphs from search-path candidates, as DiskANN builds them (each row searched over the

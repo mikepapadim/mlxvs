@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 (2026-11-12)
+
+- Byte datasets, as cuVS's int8 and uint8 datasets: `graph_search` reads `int8` and `uint8` rows as they are
+  (four columns per 32-bit load), and `CagraIndex.build(..., dtype="uint8")` (or `"int8"`) stores rows that are
+  integers in range, a quarter of float32's memory. Results equal float32's on integer data. SIFT1M quantized to
+  uint8 (its file holds normalized floats, so this loses precision): 120 MB, 478,000 queries/s at recall@10 0.925
+  and 267,000 at 0.965 (float32: 481 MB, 259,000 at 0.935 and 148,000 at 0.980).
+- `bench_search.py --dtype uint8` and `int8`.
+
 ## 0.6.0 (2026-11-12)
 
 - Filtered search, as cuVS's bitset filter: `graph_search(..., filter=)` (and `CagraIndex.search`) takes a bool mask

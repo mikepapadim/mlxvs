@@ -7,7 +7,13 @@ import mlx.core as mx
 import mlxvs
 
 _FORMAT = "mlxvs.cagra"
-_DTYPES = {"float32": mx.float32, "float16": mx.float16}
+_DTYPES = {
+    "float32": mx.float32,
+    "float16": mx.float16,
+    "int8": mx.int8,
+    "uint8": mx.uint8,
+}
+_INT_RANGE = {"int8": (-128, 127), "uint8": (0, 255)}
 
 
 def _unit_rows(x):
@@ -69,8 +75,10 @@ class CagraIndex:
             graph_degree (int): Degree of the search graph.
             metric (str): ``"l2"``, ``"cosine"`` or ``"inner_product"``.
             intermediate_graph_degree (int): Degree of the k-NN graph pruned.
-            dtype (str): How the dataset is stored for search: ``"float32"``
-              or ``"float16"``.
+            dtype (str): How the dataset is stored for search: ``"float32"``,
+              ``"float16"``, or for rows that are integers in range
+              ``"uint8"`` / ``"int8"`` (a quarter of the memory, as cuVS's
+              byte datasets such as SIFT's).
             graph (str): How the k-NN graph is pruned: ``"cagra"`` (CAGRA's
               rank-based pruning, needs no distances) or ``"vamana"``
               (JVector's diversity rule, as JVector builds its graphs).
@@ -102,7 +110,15 @@ class CagraIndex:
                 **kwargs,
             )
         dataset = mlxvs._array(rows)
-        if metric == "cosine":
+        if dtype in _INT_RANGE:
+            # integer rows as they are (cuVS's int8 and uint8 datasets): they
+            # must already be integers in range; cosine keeps them unnormalized
+            lo, hi = _INT_RANGE[dtype]
+            x = dataset.astype(mx.float32)
+            ok = mx.all(x == mx.round(x)) & (mx.min(x) >= lo) & (mx.max(x) <= hi)
+            if not ok.item():
+                raise ValueError(f"dtype={dtype!r} needs integer rows in [{lo}, {hi}]")
+        elif metric == "cosine":
             dataset = _unit_rows(dataset)
         dataset = mx.contiguous(dataset.astype(_DTYPES[dtype]))
         mx.eval(dataset, graph)
@@ -130,6 +146,11 @@ class CagraIndex:
         if q.ndim == 1:
             q = q[None]
         metric = self._metric
+        if metric == "cosine" and self._dataset.dtype in (mx.int8, mx.uint8):
+            # integer rows are stored as they are: cosine from their norms
+            return mlxvs.graph_search(
+                self._dataset, self._graph, q, k, metric, **kwargs
+            )
         if metric == "cosine":
             # the dataset is stored normalized: the dot product of unit rows is
             # the cosine similarity
