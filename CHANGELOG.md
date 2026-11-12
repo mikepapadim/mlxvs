@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0 (2026-11-12)
+
+- `CagraIndex.extend` (C++ `cagra_extend`), as cuVS's `cagra::extend`: each new row's `2 * degree` nearest rows
+  come from a graph search and are pruned to `degree` by rank-based detour counts; each of its first `degree / 2`
+  neighbors gives it the second-half slot of its neighbor with the most incoming edges; its list interleaves its
+  own neighbors with those displaced. 18,000 rows extended by 2,000 search as well as an index built on all
+  20,000 (recall@10 0.9994 against 0.9998).
+- `IvfFlatIndex` (C++ `ivf_flat_build`, `ivf_flat_search`, `ivf_flat_extend`), as cuVS's IVF-Flat: k-means lists,
+  the `n_probes` lists of nearest center scanned exactly. The scan groups (query, list) pairs by list, so each
+  threadgroup reads a list's rows once for up to 16 queries. SIFT1M, 1024 lists, built in 9.5 s: recall@10 0.954
+  at 35,700 queries/s (`n_probes` 20), 0.993 at 17,300 (50). `save` and `load` as one `.safetensors` file.
+
 ## 0.9.1 (2026-11-12)
 
 - `brute_force_knn` (and every exact k-NN built on it): when more candidates tie with the k-th score than are

@@ -173,7 +173,49 @@ static void search_case() {
   }
 }
 
+// cagra_extend: an index of 18,000 rows extended by 2,000 searches the 20,000
+// as well as one built on all of them, and finds the new rows
+static void extend_case() {
+  int n = 20000, old = 18000, dim = 32, nq = 1000, d = 16;
+  auto all = low_rank(n + nq, dim, 10, 33);
+  mx::array x(all.data(), {n, dim}, mx::float32);
+  mx::array q(all.data() + (size_t)n * dim, {nq, dim}, mx::float32);
+  mlxvs::CagraOptions o;
+  o.graph_degree = d;
+  o.intermediate_graph_degree = 32;
+  auto base = mx::slice(x, {0, 0}, {old, dim});
+  auto g_old = mlxvs::cagra_build(base, Metric::L2, o);
+  auto g_ext = mlxvs::cagra_extend(
+      base, g_old, mx::slice(x, {old, 0}, {n, dim}), Metric::L2);
+  auto g_full = mlxvs::cagra_build(x, Metric::L2, o);
+  mx::eval(g_ext, g_full);
+  const int* g = g_ext.data<int>();
+  bool valid = g_ext.shape(0) == n && g_ext.shape(1) == d;
+  long into_new = 0;
+  for (int i = 0; i < n && valid; ++i) {
+    std::unordered_set<int> seen;
+    for (int t = 0; t < d; ++t) {
+      int v = g[(size_t)i * d + t];
+      valid &= v >= -1 && v < n && v != i && (v < 0 || seen.insert(v).second);
+      into_new += i < old && v >= old;
+    }
+  }
+  double r_ext = search_recall(x, g_ext, q, 64);
+  double r_full = search_recall(x, g_full, q, 64);
+  bool ok = valid && into_new > 0 && r_ext >= r_full - 0.02;
+  std::printf(
+      "%-6s extend 18000 + 2000: recall@10 %.4f (rebuilt: %.4f), %ld edges "
+      "into the new rows%s\n",
+      ok ? "PASS" : "FAIL",
+      r_ext,
+      r_full,
+      into_new,
+      valid ? "" : ", INVALID graph");
+  check(ok, "cagra_extend");
+}
+
 int main() {
+  extend_case();
   reference_case(3000, 32, 32, 16);
   reference_case(2000, 16, 64, 32);
   reference_case(1000, 8, 24, 7);

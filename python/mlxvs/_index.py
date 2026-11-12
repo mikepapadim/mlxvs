@@ -158,6 +158,50 @@ class CagraIndex:
             metric = "inner_product"
         return mlxvs.graph_search(self._dataset, self._graph, q, k, metric, **kwargs)
 
+    def extend(self, rows):
+        """Adds rows to the index without rebuilding the graph, as cuVS's
+        ``cagra.extend``; they get ids ``len(index)`` and up.
+
+        Each new row is linked to its nearest rows found by a search of the
+        index (pruned by rank-based detour counts, as the build), and half of
+        its neighbors link back to it. Search quality stays close to a rebuild
+        while the new rows are a modest share of the index; rebuild after
+        large growth.
+
+        Args:
+            rows (array): Rows ``[m, d]``, any real dtype (integers in range
+              for byte datasets).
+
+        Returns:
+            CagraIndex: this index, extended.
+        """
+        x = mlxvs._array(rows)
+        if x.ndim == 1:
+            x = x[None]
+        if x.shape[1] != self.dim:
+            raise ValueError(f"rows must have {self.dim} columns")
+        byte_rows = self._dataset.dtype in (mx.int8, mx.uint8)
+        if byte_rows:
+            name = "int8" if self._dataset.dtype == mx.int8 else "uint8"
+            lo, hi = _INT_RANGE[name]
+            f = x.astype(mx.float32)
+            ok = mx.all(f == mx.round(f)) & (mx.min(f) >= lo) & (mx.max(f) <= hi)
+            if not ok.item():
+                raise ValueError(f"rows must be integers in [{lo}, {hi}]")
+        elif self._metric == "cosine":
+            x = _unit_rows(x)
+        x = mx.contiguous(x.astype(self._dataset.dtype))
+        metric = self._metric
+        if metric == "cosine" and not byte_rows:
+            metric = "inner_product"
+        graph = mlxvs._core.cagra_extend(
+            self._dataset, self._graph, x, getattr(mlxvs.Metric, metric)
+        )
+        self._dataset = mx.contiguous(mx.concatenate([self._dataset, x], axis=0))
+        self._graph = graph
+        mx.eval(self._dataset, self._graph)
+        return self
+
     def save(self, path):
         """Saves the dataset, graph and metric to a ``.safetensors`` file."""
         path = str(path)

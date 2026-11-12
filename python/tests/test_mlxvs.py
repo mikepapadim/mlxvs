@@ -588,3 +588,45 @@ def test_graph_search_filter_per_query():
         ids = np.asarray(ids)
         assert (ids >= 0).all()
         assert bitmap[np.arange(100)[:, None], ids].all()
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine"])
+def test_cagra_index_extend(metric):
+    x = _low_rank(10200)
+    base, queries = x[:10000], x[10000:]
+    index = mlxvs.CagraIndex.build(base[:9000], 16, metric)
+    assert index.extend(base[9000:]) is index
+    assert len(index) == 10000 and index.graph.shape == (10000, 16)
+    ids, _ = index.search(queries, 10)
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
+    assert _recall(ids, exact) > 0.95
+    # the new rows are found: each is its own nearest neighbor
+    ids, _ = index.search(base[9000:9100], 1)
+    assert (np.asarray(ids)[:, 0] == np.arange(9000, 9100)).all()
+    with pytest.raises(ValueError):
+        index.extend(base[:5, :10])
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine", "inner_product"])
+def test_ivf_flat_index(tmp_path, metric):
+    x = _low_rank(8200)
+    base, queries = x[:8000], x[8000:]
+    index = mlxvs.IvfFlatIndex.build(base[:7000], n_lists=64, metric=metric)
+    assert len(index) == 7000 and index.n_lists == 64
+    index.extend(base[7000:])
+    assert len(index) == 8000
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
+    ids, _ = index.search(queries, 10, n_probes=64)  # every list: exact
+    assert _recall(ids, exact) > 0.999
+    ids, _ = index.search(queries, 10, n_probes=16)
+    assert _recall(ids, exact) > 0.9
+    path = tmp_path / "ivf.safetensors"
+    index.save(path)
+    loaded = mlxvs.IvfFlatIndex.load(path)
+    ids2, _ = loaded.search(queries, 10, n_probes=16)
+    assert (np.asarray(ids2) == np.asarray(ids)).all()
+    # extended rows get ids 7000 and up, and find themselves (the largest
+    # inner product need not be a row's own)
+    if metric != "inner_product":
+        ids, _ = index.search(base[7000:7050], 1, n_probes=64)
+        assert (np.asarray(ids)[:, 0] == np.arange(7000, 7050)).all()

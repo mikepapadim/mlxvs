@@ -235,6 +235,132 @@ NB_MODULE(_core, m) {
       )");
 
   m.def(
+      "cagra_extend",
+      [](const mx::array& dataset,
+         const mx::array& graph,
+         const mx::array& new_rows,
+         mlxvs::Metric metric,
+         int itopk_size,
+         mx::StreamOrDevice s) {
+        mlxvs::ExtendOptions options;
+        options.search.itopk_size = itopk_size;
+        return mlxvs::cagra_extend(
+            dataset, graph, new_rows, metric, options, s);
+      },
+      "dataset"_a,
+      "graph"_a,
+      "new_rows"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "itopk_size"_a = 256,
+      "stream"_a = nb::none(),
+      R"(
+        Adds rows to a CAGRA search graph without rebuilding it, as cuVS's
+        ``cagra.extend``.
+
+        Each new row's ``2 * degree`` nearest rows are found by a graph
+        search and pruned to ``degree`` by rank-based detour counts; each of
+        its first ``degree / 2`` neighbors gives it the slot (in its second
+        half) of the neighbor with the most incoming edges; the new row's list
+        interleaves its own neighbors with those displaced.
+        ``CagraIndex.extend`` calls it.
+
+        Args:
+            dataset (array): The index's rows ``[n, d]``, as stored for search.
+            graph (array): Its search graph ``[n, degree]``.
+            new_rows (array): Rows to add ``[m, d]``, transformed as the
+              dataset (unit rows for cosine).
+            metric (Metric): As the search.
+            itopk_size (int): The search list length (at least
+              ``max(4 * degree, 256)``).
+            stream (Stream, optional): Stream or device. GPU only.
+
+        Returns:
+            array: ``int32 [n + m, degree]``, new rows at ids ``n`` and up.
+      )");
+
+  m.def(
+      "ivf_flat_build",
+      [](const mx::array& rows,
+         mlxvs::Metric metric,
+         int n_lists,
+         int kmeans_n_iters,
+         double kmeans_trainset_fraction,
+         unsigned long long seed,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfFlatOptions o;
+        o.n_lists = n_lists;
+        o.kmeans_n_iters = kmeans_n_iters;
+        o.kmeans_trainset_fraction = kmeans_trainset_fraction;
+        o.seed = seed;
+        auto i = mlxvs::ivf_flat_build(rows, metric, o, s);
+        return nb::make_tuple(i.centers, i.data, i.indices, i.offsets);
+      },
+      "rows"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "n_lists"_a = 1024,
+      "kmeans_n_iters"_a = 20,
+      "kmeans_trainset_fraction"_a = 0.5,
+      "seed"_a = 42,
+      "stream"_a = nb::none(),
+      "Builds an IVF-Flat index; returns (centers, data, indices, offsets). "
+      "IvfFlatIndex.build calls it.");
+
+  m.def(
+      "ivf_flat_search",
+      [](const mx::array& centers,
+         const mx::array& data,
+         const mx::array& indices,
+         const mx::array& offsets,
+         mlxvs::Metric metric,
+         const mx::array& queries,
+         int k,
+         int n_probes,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfFlatIndex i{centers, data, indices, offsets, metric};
+        mlxvs::IvfSearchOptions o;
+        o.n_probes = n_probes;
+        auto r = mlxvs::ivf_flat_search(i, queries, k, o, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "centers"_a,
+      "data"_a,
+      "indices"_a,
+      "offsets"_a,
+      "metric"_a,
+      "queries"_a,
+      "k"_a,
+      nb::kw_only(),
+      "n_probes"_a = 20,
+      "stream"_a = nb::none(),
+      "Searches an IVF-Flat index (IvfFlatIndex.search calls it).");
+
+  m.def(
+      "ivf_flat_extend",
+      [](const mx::array& centers,
+         const mx::array& data,
+         const mx::array& indices,
+         const mx::array& offsets,
+         mlxvs::Metric metric,
+         const mx::array& new_rows,
+         std::optional<mx::array> new_ids,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfFlatIndex i{centers, data, indices, offsets, metric};
+        auto r = mlxvs::ivf_flat_extend(i, new_rows, new_ids, s);
+        return nb::make_tuple(r.centers, r.data, r.indices, r.offsets);
+      },
+      "centers"_a,
+      "data"_a,
+      "indices"_a,
+      "offsets"_a,
+      "metric"_a,
+      "new_rows"_a,
+      "new_ids"_a = nb::none(),
+      "stream"_a = nb::none(),
+      "Adds rows to an IVF-Flat index (IvfFlatIndex.extend calls it).");
+
+  m.def(
       "save_hnswlib",
       [](const std::string& path,
          const mx::array& dataset,

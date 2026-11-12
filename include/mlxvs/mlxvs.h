@@ -433,6 +433,97 @@ MLXVS_API Neighbors graph_search(
     const SearchOptions& options = {},
     mx::StreamOrDevice s = {});
 
+/** Options of cagra_extend, as cuVS's cagra::extend_params. */
+struct ExtendOptions {
+  /**
+   * The search that finds each new row's candidates; itopk_size is raised to
+   * at least max(4 * degree, 256), as cuVS.
+   */
+  SearchOptions search;
+};
+
+/**
+ * Adds rows to a CAGRA search graph without rebuilding it, as cuVS's
+ * cagra::extend: each new row's 2 * degree nearest rows are found by a graph
+ * search of dataset [n, d] (as stored for search) and pruned to degree by
+ * rank-based detour counts; each of its first degree / 2 neighbors replaces,
+ * in its second half, the neighbor with the most incoming edges by the new
+ * row; and the new row's list interleaves its own neighbors with those
+ * displaced. Returns the graph of the n + m rows (the new rows' ids are n, n +
+ * 1, ...); the caller appends new_rows [m, d] to its dataset. The search runs
+ * on the GPU, the graph updates on the CPU.
+ */
+MLXVS_API mx::array cagra_extend(
+    const mx::array& dataset,
+    const mx::array& graph,
+    const mx::array& new_rows,
+    Metric metric,
+    const ExtendOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/** An IVF-Flat index: rows grouped into the lists of their nearest k-means
+ * center, as cuVS's ivf_flat::index. */
+struct IvfFlatIndex {
+  /** The lists' centers, float32 [lists, d]. */
+  mx::array centers;
+  /** The rows grouped by list (unit rows for Cosine), float32 [n, d]. */
+  mx::array data;
+  /** The id of each row of data, int32 [n]. */
+  mx::array indices;
+  /** Where each list starts in data, int32 [lists + 1]. */
+  mx::array offsets;
+  Metric metric;
+};
+
+/** Options of ivf_flat_build, named after cuVS's ivf_flat::index_params. */
+struct IvfFlatOptions {
+  int n_lists = 1024;
+  int kmeans_n_iters = 20;
+  /** The fraction of rows the centers are trained on (at least 64 per list). */
+  double kmeans_trainset_fraction = 0.5;
+  unsigned long long seed = 42;
+};
+
+/** Options of the IVF searches, named after cuVS's search_params. */
+struct IvfSearchOptions {
+  /** Lists scanned per query. More: higher recall, slower. */
+  int n_probes = 20;
+};
+
+/**
+ * Builds an IVF-Flat index of rows [n, d] (any real dtype): k-means centers
+ * fitted on a sample, every row added to the list of its nearest center. Ids
+ * are row numbers. Runs on the GPU.
+ */
+MLXVS_API IvfFlatIndex ivf_flat_build(
+    const mx::array& rows,
+    Metric metric,
+    const IvfFlatOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/**
+ * The k nearest indexed rows of every query [nq, d], scanning the n_probes
+ * lists of nearest center: ids and distances as brute_force_knn (-1 where
+ * the scanned lists hold fewer than k rows). k <= 256. Runs on the GPU.
+ */
+MLXVS_API Neighbors ivf_flat_search(
+    const IvfFlatIndex& index,
+    const mx::array& queries,
+    int k,
+    const IvfSearchOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/**
+ * The index with new_rows [m, d] added to the lists of their nearest
+ * centers (the centers do not move), with ids new_ids, or the largest id plus
+ * 1, 2, ... by default.
+ */
+MLXVS_API IvfFlatIndex ivf_flat_extend(
+    const IvfFlatIndex& index,
+    const mx::array& new_rows,
+    const std::optional<mx::array>& new_ids = std::nullopt,
+    mx::StreamOrDevice s = {});
+
 /**
  * Writes a search index (the rows [n, d], any real dtype, and its graph [n,
  * degree] of ids, -1 skipped) in hnswlib's binary format, as cuVS's

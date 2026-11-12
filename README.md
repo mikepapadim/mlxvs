@@ -40,6 +40,8 @@ deduplication, for exact k-NN ground truth, or as the build step of a graph inde
 | `vamana_build(rows, graph_degree)`, `vamana_prune(rows, candidates, graph_degree, alpha=1.2)` | Vamana's robust pruning with JVector's diversity rule (the graph JVector builds), forward then with reverse edges; `CagraIndex.build(..., graph="vamana")` | |
 | `graph_search(base, graph, queries, k)` | Approximate k-NN of queries by beam search of a graph: one threadgroup per query for batches, several per query for a few queries (CAGRA's single- and multi-CTA search) | `cagra::search` |
 | `CagraIndex.build(rows, graph_degree)`, `.search(queries, k)`, `.save(path)`, `CagraIndex.load(path)` | A search index: the dataset (float32 or float16, normalized for cosine) and its CAGRA graph, stored once for search; one `.safetensors` file | `cagra::build`, `search`, `serialize` |
+| `CagraIndex.extend(rows)` | Adds rows without rebuilding the graph: each linked to its nearest by a graph search, half of its neighbors linking back | `cagra::extend` |
+| `IvfFlatIndex.build(rows, n_lists)`, `.search(queries, k, n_probes)`, `.extend(rows)`, `.save`, `.load` | IVF-Flat: rows in the lists of their nearest k-means center, the probed lists scanned exactly on the GPU | `ivf_flat::build`, `search`, `extend` |
 | `CagraIndex.save_hnswlib(path)` | The index in hnswlib's format: build on the GPU, serve with hnswlib on any CPU | `cagra::serialize_to_hnswlib` |
 | `CagraIndex.save_jvector(path)` | The index in JVector's on-disk format (`OnDiskGraphIndex`, JVector 4): build on the GPU, search from Java; see [examples/jvector](examples/jvector) | |
 | `NearestNeighbors(n_neighbors).fit(X).kneighbors(Q)` | scikit-learn's interface over the above, NumPy in and out | |
@@ -254,7 +256,8 @@ from `bench_search.py`'s output.
 
 ## Roadmap
 
-1. Indexes larger than the GPU's memory: search in parts, rows streamed from disk.
+1. IVF-PQ and compressed CAGRA datasets (product quantization), with exact re-ranking: indexes larger than
+   the GPU's memory.
 
 Tried and left out: Vamana graphs from search-path candidates, as DiskANN builds them (each row searched over the
 CAGRA graph, its path and result list pruned with JVector's rule). On SIFT1M at degree 32 they stay below CAGRA's

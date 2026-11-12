@@ -20,6 +20,7 @@ from mlxvs._core import GraphBuild, Metric, SearchAlgo
 __all__ = [
     "CagraIndex",
     "GraphBuild",
+    "IvfFlatIndex",
     "Metric",
     "NearestNeighbors",
     "SearchAlgo",
@@ -34,7 +35,7 @@ __all__ = [
     "vamana_build",
     "vamana_prune",
 ]
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 
 def __getattr__(name):
@@ -231,5 +232,7 @@ for _f in (
     _f.__module__ = __name__
 
 from mlxvs._index import CagraIndex
+from mlxvs._ivf import IvfFlatIndex
 
 CagraIndex.__module__ = __name__
+IvfFlatIndex.__module__ = __name__

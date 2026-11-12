@@ -63,6 +63,15 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   list after every round, dropping expanded nodes the filter rejects (a prefix sum per SIMD group), and writes the
   first k allowed entries; multi-CTA drops a rejected parent after expanding it and skips rejected entries at the
   end. Seeds replace the random start's first slots (a draw index below `num_seeds`), as cuVS.
+- `cagra_extend`: cuVS's `add_node_core`. The candidates come from `graph_search` on the GPU; the detour counts,
+  reverse edges and interleaving run on the CPU over the copied graph, one new row after another (each sees the
+  edges the earlier ones changed).
+- `ivf_flat_search`: the probed lists come from `brute_force_knn` over the centers. Each query gets a candidate
+  buffer as long as its probed lists together (offsets by prefix sums), the widest query setting the width. The
+  (query, list) pairs are sorted by list and cut into items of up to 16 pairs of one list (fewer for wide rows, so
+  the queries fit in 8 KB of threadgroup memory): one threadgroup per item loads the queries, and each thread
+  reads rows of the list once, scoring them against every query of the item. `topk_merge` then keeps the best k
+  of each buffer.
 - `vamana_prune`: JVector's `VamanaDiversityProvider.retainDiverse` on the GPU. Per chunk of nodes (gathered rows
   near 256 MB), the candidates' rows are gathered and two batched matrix multiplies give the node-candidate and
   candidate-candidate dot products, turned into JVector's similarities (1 / (1 + squared distance) from norms and
