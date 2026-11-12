@@ -44,6 +44,14 @@ typedef enum {
   MLXVS_COSINE = 2,
 } mlxvs_metric;
 
+/** Element types of rows given to mlxvs_index_build_typed. */
+typedef enum {
+  MLXVS_FLOAT32 = 0,
+  /** Stored and read as they are: a quarter of float32's memory. */
+  MLXVS_INT8 = 1,
+  MLXVS_UINT8 = 2,
+} mlxvs_dtype;
+
 /** How the k-NN graph is pruned into a search graph. */
 typedef enum {
   /** CAGRA's rank-based pruning plus reverse edges. */
@@ -116,6 +124,20 @@ MLXVS_C_API int mlxvs_index_build(
     mlxvs_index* out);
 
 /**
+ * mlxvs_index_build for rows of another element type: rows holds n * d
+ * elements of dtype (int8 and uint8 rows are stored as they are, as cuVS's
+ * byte datasets; cosine then keeps them unnormalized). Queries are float32.
+ */
+MLXVS_C_API int mlxvs_index_build_typed(
+    const void* rows,
+    mlxvs_dtype dtype,
+    int64_t n,
+    int32_t d,
+    mlxvs_metric metric,
+    const mlxvs_build_params* params,
+    mlxvs_index* out);
+
+/**
  * An index of rows and a search graph built elsewhere: graph holds n rows of
  * graph_degree int32 neighbor ids (-1 entries are skipped).
  */
@@ -172,6 +194,21 @@ MLXVS_C_API int mlxvs_index_search_seeded(
     const uint32_t* filter,
     const int32_t* seeds,
     int32_t num_seeds,
+    int32_t* ids,
+    float* distances);
+
+/**
+ * mlxvs_index_search with a filter per query (cuVS's bitmap): bitmap holds nq
+ * bitsets of (n + 31) / 32 uint32 words each, laid out as
+ * mlxvs_index_search_filtered's.
+ */
+MLXVS_C_API int mlxvs_index_search_bitmap(
+    mlxvs_index index,
+    const float* queries,
+    int64_t nq,
+    int32_t k,
+    const mlxvs_search_params* params,
+    const uint32_t* bitmap,
     int32_t* ids,
     float* distances);
 

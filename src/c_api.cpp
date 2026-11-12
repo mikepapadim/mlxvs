@@ -6,6 +6,7 @@
 #include "mlxvs/mlxvs_c.h"
 
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -101,6 +102,61 @@ void copy_out(const mx::array& a, void* out, size_t bytes) {
   std::memcpy(out, c.data<char>(), bytes);
 }
 
+// The search behind every mlxvs_index_search* function; throws on errors.
+void search_impl(
+    mlxvs_index index,
+    const float* queries,
+    int64_t nq,
+    int32_t k,
+    const mlxvs_search_params* params,
+    const mx::array* filter,
+    const int32_t* seeds,
+    int32_t num_seeds,
+    int32_t* ids,
+    float* distances) {
+  require(index != nullptr, "index must not be NULL.");
+  require(ids != nullptr, "ids must not be NULL.");
+  mlxvs_search_params p;
+  mlxvs_search_params_init(&p);
+  if (params != nullptr) {
+    p = *params;
+  }
+  require(
+      p.algo >= MLXVS_SEARCH_AUTO && p.algo <= MLXVS_SEARCH_MULTI_CTA,
+      "algo must be a mlxvs_search_algo.");
+  auto q = host_rows(queries, nq, index->dataset.shape(1), "queries");
+  auto metric = to_metric(index->metric);
+  bool bytes =
+      index->dataset.dtype() == mx::int8 || index->dataset.dtype() == mx::uint8;
+  if (index->metric == MLXVS_COSINE && !bytes) {
+    // the dataset is stored normalized: the dot product of unit rows is the
+    // cosine similarity
+    q = unit_rows(q);
+    metric = mlxvs::Metric::InnerProduct;
+  }
+  mlxvs::SearchOptions o;
+  o.algo = static_cast<mlxvs::SearchAlgo>(p.algo);
+  o.itopk_size = p.itopk_size;
+  o.search_width = p.search_width;
+  o.max_iterations = p.max_iterations;
+  o.min_iterations = p.min_iterations;
+  o.team_size = p.team_size;
+  o.num_random_samplings = p.num_random_samplings;
+  o.seed = p.seed;
+  if (filter != nullptr) {
+    o.filter = *filter;
+  }
+  if (seeds != nullptr && num_seeds > 0) {
+    o.seeds = mx::array(seeds, {(int)nq, num_seeds}, mx::int32);
+  }
+  auto r = mlxvs::graph_search(index->dataset, index->graph, q, k, metric, o);
+  size_t count = (size_t)nq * k;
+  copy_out(r.ids, ids, count * sizeof(int32_t));
+  if (distances != nullptr) {
+    copy_out(r.distances, distances, count * sizeof(float));
+  }
+}
+
 } // namespace
 
 extern "C" {
@@ -146,6 +202,18 @@ int mlxvs_index_build(
     mlxvs_metric metric,
     const mlxvs_build_params* params,
     mlxvs_index* out) {
+  return mlxvs_index_build_typed(
+      rows, MLXVS_FLOAT32, n, d, metric, params, out);
+}
+
+int mlxvs_index_build_typed(
+    const void* rows,
+    mlxvs_dtype dtype,
+    int64_t n,
+    int32_t d,
+    mlxvs_metric metric,
+    const mlxvs_build_params* params,
+    mlxvs_index* out) {
   return guarded([&] {
     require(out != nullptr, "out must not be NULL.");
     *out = nullptr;
@@ -157,7 +225,19 @@ int mlxvs_index_build(
     require(
         p.graph == MLXVS_GRAPH_CAGRA || p.graph == MLXVS_GRAPH_VAMANA,
         "graph must be MLXVS_GRAPH_CAGRA or MLXVS_GRAPH_VAMANA.");
-    auto x = host_rows(rows, n, d, "rows");
+    require(
+        dtype == MLXVS_FLOAT32 || dtype == MLXVS_INT8 || dtype == MLXVS_UINT8,
+        "dtype must be a mlxvs_dtype.");
+    require(rows != nullptr || n == 0, "rows must not be NULL.");
+    require(
+        n >= 0 && n < (1LL << 31), "the number of rows must be in [0, 2^31).");
+    require(d >= 1, "the dimension must be at least 1.");
+    auto raw = dtype == MLXVS_INT8
+        ? mx::array((const int8_t*)rows, {(int)n, d}, mx::int8)
+        : dtype == MLXVS_UINT8
+        ? mx::array((const uint8_t*)rows, {(int)n, d}, mx::uint8)
+        : mx::array((const float*)rows, {(int)n, d}, mx::float32);
+    auto x = mx::astype(raw, mx::float32);
     auto m = to_metric(metric);
     mx::array graph = mx::array(0);
     if (p.graph == MLXVS_GRAPH_VAMANA) {
@@ -172,7 +252,8 @@ int mlxvs_index_build(
       o.intermediate_graph_degree = p.intermediate_graph_degree;
       graph = mlxvs::cagra_build(x, m, o);
     }
-    auto dataset = stored(x, metric, p.float16 != 0);
+    auto dataset = dtype == MLXVS_FLOAT32 ? stored(x, metric, p.float16 != 0)
+                                          : mx::contiguous(raw);
     mx::eval(dataset, graph);
     *out = new mlxvs_index_s{dataset, graph, metric};
   });
@@ -225,6 +306,26 @@ int mlxvs_index_search_filtered(
       index, queries, nq, k, params, filter, nullptr, 0, ids, distances);
 }
 
+int mlxvs_index_search_bitmap(
+    mlxvs_index index,
+    const float* queries,
+    int64_t nq,
+    int32_t k,
+    const mlxvs_search_params* params,
+    const uint32_t* bitmap,
+    int32_t* ids,
+    float* distances) {
+  return guarded([&] {
+    require(
+        index != nullptr && bitmap != nullptr,
+        "index and bitmap must not be NULL.");
+    int words = (int)((index->dataset.shape(0) + 31) / 32);
+    mx::array filter(bitmap, {(int)nq, words}, mx::uint32);
+    search_impl(
+        index, queries, nq, k, params, &filter, nullptr, 0, ids, distances);
+  });
+}
+
 int mlxvs_index_search_seeded(
     mlxvs_index index,
     const float* queries,
@@ -237,46 +338,23 @@ int mlxvs_index_search_seeded(
     int32_t* ids,
     float* distances) {
   return guarded([&] {
-    require(index != nullptr, "index must not be NULL.");
-    require(ids != nullptr, "ids must not be NULL.");
-    mlxvs_search_params p;
-    mlxvs_search_params_init(&p);
-    if (params != nullptr) {
-      p = *params;
-    }
-    require(
-        p.algo >= MLXVS_SEARCH_AUTO && p.algo <= MLXVS_SEARCH_MULTI_CTA,
-        "algo must be a mlxvs_search_algo.");
-    auto q = host_rows(queries, nq, index->dataset.shape(1), "queries");
-    auto metric = to_metric(index->metric);
-    if (index->metric == MLXVS_COSINE) {
-      // the dataset is stored normalized: the dot product of unit rows is the
-      // cosine similarity
-      q = unit_rows(q);
-      metric = mlxvs::Metric::InnerProduct;
-    }
-    mlxvs::SearchOptions o;
-    o.algo = static_cast<mlxvs::SearchAlgo>(p.algo);
-    o.itopk_size = p.itopk_size;
-    o.search_width = p.search_width;
-    o.max_iterations = p.max_iterations;
-    o.min_iterations = p.min_iterations;
-    o.team_size = p.team_size;
-    o.num_random_samplings = p.num_random_samplings;
-    o.seed = p.seed;
+    std::optional<mx::array> f;
     if (filter != nullptr) {
+      require(index != nullptr, "index must not be NULL.");
       int words = (int)((index->dataset.shape(0) + 31) / 32);
-      o.filter = mx::array(filter, {words}, mx::uint32);
+      f = mx::array(filter, {words}, mx::uint32);
     }
-    if (seeds != nullptr && num_seeds > 0) {
-      o.seeds = mx::array(seeds, {(int)nq, num_seeds}, mx::int32);
-    }
-    auto r = mlxvs::graph_search(index->dataset, index->graph, q, k, metric, o);
-    size_t count = (size_t)nq * k;
-    copy_out(r.ids, ids, count * sizeof(int32_t));
-    if (distances != nullptr) {
-      copy_out(r.distances, distances, count * sizeof(float));
-    }
+    search_impl(
+        index,
+        queries,
+        nq,
+        k,
+        params,
+        f ? &*f : nullptr,
+        seeds,
+        num_seeds,
+        ids,
+        distances);
   });
 }
 

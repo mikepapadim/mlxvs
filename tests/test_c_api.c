@@ -193,11 +193,56 @@ static void index_case(mlxvs_metric metric, int graph, const char* name) {
   free(eids);
 }
 
+/* uint8 rows stored as they are, and a filter per query */
+static void bytes_and_bitmap_case(void) {
+  const int n = 6000, nq = 100, d = 24, k = 10;
+  float* x = make_rows(n + nq, d, 11);
+  uint8_t* bytes = malloc((size_t)n * d);
+  float* q = malloc(sizeof(float) * nq * d);
+  for (int i = 0; i < n * d; ++i)
+    bytes[i] = (uint8_t)lroundf(fminf(fmaxf(128.0f + 100.0f * x[i], 0), 255));
+  for (int i = 0; i < nq * d; ++i)
+    q[i] = roundf(fminf(fmaxf(128.0f + 100.0f * x[n * d + i], 0), 255));
+  mlxvs_build_params bp;
+  mlxvs_build_params_init(&bp);
+  bp.graph_degree = 16;
+  bp.intermediate_graph_degree = 32;
+  mlxvs_index index = NULL;
+  check(
+      mlxvs_index_build_typed(
+          bytes, MLXVS_UINT8, n, d, MLXVS_L2, &bp, &index) == MLXVS_OK,
+      "build uint8");
+  int32_t* ids = malloc(sizeof(int32_t) * nq * k);
+  int words = (n + 31) / 32;
+  uint32_t* bitmap = calloc((size_t)nq * words, sizeof(uint32_t));
+  for (int i = 0; i < nq; ++i)
+    for (int r = 0; r < n; ++r)
+      if ((r + i) % 5 != 0)
+        bitmap[(size_t)i * words + r / 32] |= 1u << (r % 32);
+  check(
+      mlxvs_index_search_bitmap(index, q, nq, k, NULL, bitmap, ids, NULL) ==
+          MLXVS_OK,
+      "bitmap search");
+  int ok = 1;
+  for (int i = 0; i < nq; ++i)
+    for (int j = 0; j < k; ++j)
+      ok &= ids[i * k + j] >= 0 && (ids[i * k + j] + i) % 5 != 0;
+  printf("%-6s uint8 rows, filter per query\n", ok ? "PASS" : "FAIL");
+  check(ok, "uint8 and bitmap");
+  mlxvs_index_free(index);
+  free(x);
+  free(bytes);
+  free(q);
+  free(ids);
+  free(bitmap);
+}
+
 int main(void) {
   printf("mlxvs %s, C API %d\n", mlxvs_version(), MLXVS_C_API_VERSION);
   index_case(MLXVS_L2, MLXVS_GRAPH_CAGRA, "l2 cagra");
   index_case(MLXVS_COSINE, MLXVS_GRAPH_CAGRA, "cosine cagra");
   index_case(MLXVS_L2, MLXVS_GRAPH_VAMANA, "l2 vamana");
+  bytes_and_bitmap_case();
 
   /* errors */
   float rows[8] = {0};

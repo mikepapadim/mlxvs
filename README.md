@@ -246,7 +246,7 @@ from `bench_search.py`'s output.
 | `algo` = `"auto"` | `search_params::algo` | same rule: single-CTA for at least two queries per GPU core (cuVS: per SM) and `itopk_size` <= 256, else multi-CTA; no multi-kernel mode |
 | `team_size` = 0 (automatic) | `search_params::team_size` | same choice by dimension: 8, 16 or 32 lanes per distance |
 | `min_iterations` = 0 | `search_params::min_iterations` | same |
-| `filter=` bool mask or bitset | `bitset_filter` | same semantics: rejected rows traversed, never returned; multi-CTA's list grows with `filtering_rate` |
+| `filter=` bool mask or bitset, `[n]` or `[nq, n]` | `bitset_filter`, `bitmap_filter` | same semantics: rejected rows traversed, never returned; multi-CTA's list grows with `filtering_rate` |
 | `seeds=` `[nq, num_seeds]` | `seed_ptr`, `num_seeds` | same for single-CTA; multi-CTA spreads a query's seeds over its threadgroups |
 | `max_iterations` = 0 (automatic) | `search_params::max_iterations` | same automatic value; stops earlier once every list entry is expanded |
 | `num_random_samplings` = 1 | `search_params::num_random_samplings` | same: itopk + width * degree start slots, each the nearest of this many random nodes; no seed nodes yet |
@@ -254,7 +254,7 @@ from `bench_search.py`'s output.
 
 ## Roadmap
 
-1. Per-query filters (cuVS's bitmap); byte datasets in the C API.
+1. Indexes larger than the GPU's memory: search in parts, rows streamed from disk.
 
 Tried and left out: Vamana graphs from search-path candidates, as DiskANN builds them (each row searched over the
 CAGRA graph, its path and result list pruned with JVector's rule). On SIFT1M at degree 32 they stay below CAGRA's

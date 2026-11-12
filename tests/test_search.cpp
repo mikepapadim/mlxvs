@@ -350,6 +350,39 @@ int main() {
     }
     std::printf("%-6s filter as a bitset\n", ok ? "PASS" : "FAIL");
     check(ok, "bitset filter");
+
+    // a filter per query (cuVS's bitmap): query i rejects rows r with
+    // (r + i) % 3 == 0
+    std::vector<uint8_t> bitmap((size_t)nq * n);
+    for (int i = 0; i < nq; ++i)
+      for (int r = 0; r < n; ++r)
+        bitmap[(size_t)i * n + r] = (r + i) % 3 != 0;
+    auto bm =
+        mx::astype(mx::array(bitmap.data(), {nq, n}, mx::uint8), mx::bool_);
+    for (auto algo :
+         {mlxvs::SearchAlgo::SingleCta, mlxvs::SearchAlgo::MultiCta}) {
+      mlxvs::SearchOptions po;
+      po.algo = algo;
+      po.filter = bm;
+      auto pg = mlxvs::graph_search(x, g, q, k, Metric::L2, po);
+      mx::eval(pg.ids);
+      bool allowed = true;
+      long valid = 0;
+      for (int i = 0; i < nq; ++i)
+        for (int j = 0; j < k; ++j) {
+          int id = pg.ids.data<int>()[(size_t)i * k + j];
+          allowed &= id >= 0 && (id + i) % 3 != 0;
+          valid += id >= 0;
+        }
+      std::printf(
+          "%-6s filter per query %s: %ld/%d returned, all allowed: %s\n",
+          allowed ? "PASS" : "FAIL",
+          algo == mlxvs::SearchAlgo::SingleCta ? "single-CTA" : "multi-CTA",
+          valid,
+          nq * k,
+          allowed ? "yes" : "NO");
+      check(allowed, "per-query filter");
+    }
   }
   {
     // seed nodes: with one iteration, the exact nearest row given as a seed

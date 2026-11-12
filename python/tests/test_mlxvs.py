@@ -575,3 +575,16 @@ def test_cagra_index_byte_rows(tmp_path, dtype, shift):
     assert mlxvs.CagraIndex.load(path).dtype == index.dtype
     with pytest.raises(ValueError):
         mlxvs.CagraIndex.build(base + 0.5, 16, dtype=dtype)  # not integers
+
+
+def test_graph_search_filter_per_query():
+    x = _low_rank(4100)
+    base, queries = x[:4000], x[4000:]
+    index = mlxvs.CagraIndex.build(base, 16)
+    rows = np.arange(4000)
+    bitmap = (rows[None, :] + np.arange(100)[:, None]) % 4 != 0  # [nq, n]
+    for algo in ("single_cta", "multi_cta"):
+        ids, _ = index.search(queries, 10, algo=algo, filter=bitmap)
+        ids = np.asarray(ids)
+        assert (ids >= 0).all()
+        assert bitmap[np.arange(100)[:, None], ids].all()

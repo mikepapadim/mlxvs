@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0 (2026-11-12)
+
+- A filter per query, as cuVS's bitmap filter: `filter=` also takes bool `[nq, n]` or `uint32 [nq, ceil(n / 32)]`;
+  C API `mlxvs_index_search_bitmap`.
+- C API byte datasets: `mlxvs_index_build_typed` with `MLXVS_INT8` or `MLXVS_UINT8` rows, stored as they are.
+- The C API's search functions share one implementation.
+
 ## 0.8.0 (2026-11-12)
 
 - `save_hnswlib` and `save_jvector` in C++ (`include/mlxvs/mlxvs.h`) and the C API (`mlxvs_index_save_hnswlib`,

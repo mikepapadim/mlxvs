@@ -383,10 +383,12 @@ struct SearchOptions {
   unsigned long long seed = 0x128394;
 
   /**
-   * Rows a search may return, as cuVS's bitset filter: bool [n] (true:
-   * allowed) or a bitset uint32 [ceil(n / 32)] (bit i % 32 of word i / 32 set:
-   * row i allowed). Rejected rows are still traversed (their neighbors lead to
-   * allowed ones) but leave the list once expanded and are never returned.
+   * Rows a search may return, as cuVS's filters: for every query, bool [n]
+   * (true: allowed) or a bitset uint32 [ceil(n / 32)] (bit i % 32 of word i /
+   * 32 set: row i allowed); or one per query (cuVS's bitmap), bool [nq, n] or
+   * uint32 [nq, ceil(n / 32)]. Rejected rows are still traversed (their
+   * neighbors lead to allowed ones) but leave the list once expanded and are
+   * never returned.
    */
   std::optional<mx::array> filter;
 

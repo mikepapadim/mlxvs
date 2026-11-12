@@ -401,8 +401,9 @@ NB_MODULE(_core, m) {
               nearest of this many random nodes.
             seed (int): Seed of the random start nodes.
             filter (array, optional): Rows that may be returned, as cuVS's
-              bitset filter: bool ``[n]`` (True: allowed) or a bitset
-              ``uint32 [ceil(n / 32)]``. Rejected rows are still traversed
+              filters: bool ``[n]`` (True: allowed) or a bitset ``uint32
+              [ceil(n / 32)]`` for every query, or bool ``[nq, n]`` /
+              ``uint32 [nq, ceil(n / 32)]``, one per query (cuVS's bitmap). Rejected rows are still traversed
               but never returned. With few rows allowed, use multi-CTA (its
               list grows with the filtering rate, as cuVS) or a larger
               ``itopk_size``.

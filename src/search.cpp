@@ -102,7 +102,7 @@ struct Prepared {
   int metric_code;
   int team;
   mx::array filter; // bitset words, or one word when there is no filter
-  bool filtered;
+  int filtered; // 0: no filter, 1: one bitset, 2: a bitset per query
   mx::array seeds; // [nq, num_seeds] int32, or one dummy entry
   int num_seeds;
 };
@@ -199,6 +199,9 @@ Neighbors search_multi_cta(
     auto qseeds = in.num_seeds > 0
         ? mx::slice(in.seeds, {q0, 0}, {q1, in.num_seeds})
         : in.seeds;
+    auto qfilter = in.filtered == 2
+        ? mx::slice(in.filter, {q0, 0}, {q1, in.filter.shape(1)})
+        : in.filter;
     auto params = mx::array(
         {n,
          d,
@@ -214,7 +217,7 @@ Neighbors search_multi_cta(
         {11},
         mx::int32);
     auto out = search_mc_kernel()(
-        {in.base, in.graph, qs, in.inv_norm, in.filter, qseeds, params},
+        {in.base, in.graph, qs, in.inv_norm, qfilter, qseeds, params},
         {{bq, cols}, {bq, cols}, {bq, 1 << tbits}},
         {mx::int32, mx::float32, mx::int32},
         {num_cta * kernels::SEARCH_MC_THREADS, bq, 1},
@@ -301,6 +304,9 @@ Neighbors search_single_cta(
     auto qseeds = in.num_seeds > 0
         ? mx::slice(in.seeds, {q0, 0}, {q1, in.num_seeds})
         : in.seeds;
+    auto qfilter = in.filtered == 2
+        ? mx::slice(in.filter, {q0, 0}, {q1, in.filter.shape(1)})
+        : in.filter;
     auto params = mx::array(
         {n,
          d,
@@ -315,7 +321,7 @@ Neighbors search_single_cta(
         {10},
         mx::int32);
     auto out = search_kernel()(
-        {in.base, in.graph, qs, in.inv_norm, in.filter, qseeds, params},
+        {in.base, in.graph, qs, in.inv_norm, qfilter, qseeds, params},
         {{bq, k}, {bq, k}},
         {mx::int32, mx::float32},
         {bq * kernels::SEARCH_THREADS, 1, 1},
@@ -432,40 +438,51 @@ Neighbors graph_search(
     throw std::invalid_argument(
         "[mlxvs::graph_search] team_size must be 0, 4, 8, 16 or 32.");
   }
-  // the filter as bitset words
+  // the filter as bitset words: one bitset [words], or one per query [nq,
+  // words] (cuVS's bitmap filter)
   auto filter = mx::array({0xffffffffu});
-  bool filtered = options.filter.has_value();
+  int filtered = 0;
   float rate = options.filtering_rate;
-  if (filtered) {
+  if (options.filter.has_value()) {
     const auto& f = *options.filter;
     int words = (n + 31) / 32;
-    if (f.ndim() == 1 && f.dtype() == mx::bool_ && f.shape(0) == n) {
-      auto padded = mx::pad(mx::astype(f, mx::uint32), {{0, words * 32 - n}});
+    bool per_query = f.ndim() == 2 && f.shape(0) == nq;
+    int last = f.ndim() - 1;
+    if ((f.ndim() == 1 || per_query) && f.dtype() == mx::bool_ &&
+        f.shape(last) == n) {
+      std::vector<std::pair<int, int>> widths(f.ndim(), {0, 0});
+      widths[last] = {0, words * 32 - n};
+      auto u = mx::pad(mx::astype(f, mx::uint32), widths);
+      auto shape = per_query ? mx::Shape{nq, words, 32} : mx::Shape{words, 32};
       auto bits = mx::left_shift(mx::array(1u), mx::arange(32, mx::uint32));
-      filter = mx::sum(mx::multiply(mx::reshape(padded, {words, 32}), bits), 1);
-      filter = mx::astype(filter, mx::uint32);
+      filter = mx::astype(
+          mx::sum(mx::multiply(mx::reshape(u, shape), bits), -1), mx::uint32);
       if (rate < 0) {
         rate = 1.0f - mx::mean(mx::astype(f, mx::float32)).item<float>();
       }
     } else if (
-        f.ndim() == 1 && f.shape(0) == words &&
+        (f.ndim() == 1 || per_query) && f.shape(last) == words &&
         (f.dtype() == mx::uint32 || f.dtype() == mx::int32)) {
       filter = mx::view(f, mx::uint32);
       if (rate < 0) {
         // popcount of the words, the padding bits not counted
         auto bits = mx::bitwise_and(
             mx::right_shift(
-                mx::expand_dims(filter, 1), mx::arange(32, mx::uint32)),
+                mx::expand_dims(filter, -1), mx::arange(32, mx::uint32)),
             mx::array(1u));
+        auto flat = mx::reshape(bits, {per_query ? nq : 1, words * 32});
         auto allowed = mx::sum(
-            mx::astype(mx::slice(mx::flatten(bits), {0}, {n}), mx::float32));
-        rate = 1.0f - allowed.item<float>() / n;
+            mx::astype(
+                mx::slice(flat, {0, 0}, {flat.shape(0), n}), mx::float32));
+        rate = 1.0f - allowed.item<float>() / ((float)n * flat.shape(0));
       }
     } else {
       throw std::invalid_argument(
-          "[mlxvs::graph_search] filter must be bool [n] or a bitset uint32 "
-          "[ceil(n / 32)].");
+          "[mlxvs::graph_search] filter must be bool [n] or [nq, n], or "
+          "bitsets uint32 [ceil(n / 32)] or [nq, ceil(n / 32)].");
     }
+    filtered = per_query ? 2 : 1;
+    filter = mx::contiguous(filter);
   }
   if (multi && filtered && rate > 0 && rate < 1) {
     // as cuVS's search plan: a longer list when the filter rejects rows

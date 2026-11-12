@@ -207,7 +207,8 @@ inline void mlxvs_dev_remove(device atomic_int* table, uint bits, int id) {
 // template: M (list length, multiple of 32), CP (candidate slots, power of
 // two), QCAP (query floats in threadgroup memory, 1 when read from device),
 // QSHARED, HBITS (log2 of the visited-set slots), TEAM (lanes per distance:
-// 4, 8, 16 or 32), FILTER (filter [ceil(n / 32)] uint: bit set, row allowed;
+// 4, 8, 16 or 32), FILTER (0: none; 1: filter [ceil(n / 32)] uint, bit set:
+// row allowed; 2: filter [nq, ceil(n / 32)], one bitset per query;
 // expanded nodes it rejects leave the list, and only allowed ones are output),
 // NSEEDS (seeds [nq, NSEEDS] int: the first start slots' nodes, as cuVS)
 // inputs: base [n, d] float, graph [n, deg] int, queries [nq, d] float,
@@ -234,6 +235,8 @@ constexpr const char* SEARCH_SOURCE = R"(
   int rand_slots = params[9];
   int rand_rounds = (rand_slots + (int)CP - 1) / (int)CP;
   size_t qrow = (size_t)q * (size_t)d;
+  // FILTER 1: one bitset for every query; 2: a bitset per query (a bitmap)
+  auto qfilter = filter + (FILTER == 2 ? (size_t)q * (size_t)((n + 31) / 32) : 0);
 
   threadgroup float qv[QCAP];
   threadgroup atomic_int visited[HSIZE];
@@ -462,7 +465,7 @@ constexpr const char* SEARCH_SOURCE = R"(
       if (lid < M) {
         kv = top_i[cur * M + lid];
         ks = top_s[cur * M + lid];
-        keep = kv >= 0 || (kv < -1 && mlxvs_allowed(filter, -kv - 2));
+        keep = kv >= 0 || (kv < -1 && mlxvs_allowed(qfilter, -kv - 2));
       }
       uint before = simd_prefix_exclusive_sum(keep ? 1u : 0u);
       if (lane == 31) {
@@ -495,7 +498,7 @@ constexpr const char* SEARCH_SOURCE = R"(
   if (lid < M) {
     s = top_s[cur * M + lid];
     v = mlxvs_node(top_i[cur * M + lid]);
-    ok = v >= 0 && (!FILTER || mlxvs_allowed(filter, v));
+    ok = v >= 0 && (!FILTER || mlxvs_allowed(qfilter, v));
   }
   uint before = simd_prefix_exclusive_sum(ok ? 1u : 0u);
   if (lane == 31) {
@@ -571,6 +574,8 @@ constexpr const char* SEARCH_MC_SOURCE = R"(
   uint nq = (uint)params[9];
   uint tbits = (uint)params[10];
   size_t qrow = (size_t)q * (size_t)d;
+  // FILTER 1: one bitset for every query; 2: a bitset per query (a bitmap)
+  auto qfilter = filter + (FILTER == 2 ? (size_t)q * (size_t)((n + 31) / 32) : 0);
   device atomic_int* trav = traversed + (size_t)q * ((size_t)1 << tbits);
 
   threadgroup float qv[QCAP];
@@ -774,7 +779,7 @@ constexpr const char* SEARCH_MC_SOURCE = R"(
     }
     // an expanded parent the filter rejects leaves the buffer, as cuVS
     if (FILTER && lid == 0 && ps >= 0 &&
-        !mlxvs_allowed(filter, mlxvs_node(buf_i[ps]))) {
+        !mlxvs_allowed(qfilter, mlxvs_node(buf_i[ps]))) {
       buf_i[ps] = -1;
       buf_s[ps] = -INFINITY;
     }
@@ -792,9 +797,9 @@ constexpr const char* SEARCH_MC_SOURCE = R"(
       bool valid = false;
       int node = -1;
       if (v < -1) {
-        valid = !FILTER || mlxvs_allowed(filter, -v - 2);
+        valid = !FILTER || mlxvs_allowed(qfilter, -v - 2);
         node = -v - 2;
-      } else if (v >= 0 && offset < ITOPK && (!FILTER || mlxvs_allowed(filter, v)) &&
+      } else if (v >= 0 && offset < ITOPK && (!FILTER || mlxvs_allowed(qfilter, v)) &&
                  mlxvs_dev_insert(trav, tbits, v)) {
         valid = true;
         node = v;
