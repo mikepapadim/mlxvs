@@ -26,7 +26,9 @@ ROW = re.compile(r"^(mlxvs .*?|hnswlib \(CPU\))\s+(\d+)\s+([\d.]+)\s+([\d,]+)\s*
 def parse(path):
     """{series: [(recall, qps)]} and the build seconds of mlxvs and hnswlib."""
     series, builds = {}, {}
-    for line in open(path):
+    with open(path) as f:
+        lines = f.readlines()
+    for line in lines:
         m = ROW.match(line.rstrip())
         if m:
             name = "hnswlib" if m[1].startswith("hnswlib") else "mlxvs"

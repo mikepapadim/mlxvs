@@ -31,8 +31,10 @@ __all__ = [
     "kmeans_fit",
     "kmeans_predict",
     "nn_descent",
+    "vamana_build",
+    "vamana_prune",
 ]
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 def __getattr__(name):
@@ -136,6 +138,52 @@ def cagra_build(
     return cagra_optimize(knn, graph_degree)
 
 
+@functools.wraps(_core.vamana_prune)
+def vamana_prune(rows, candidates, graph_degree, metric=Metric.l2, **kwargs):
+    return _core.vamana_prune(
+        _array(rows), _array(candidates), graph_degree, _metric(metric), **kwargs
+    )
+
+
+def vamana_build(
+    rows,
+    graph_degree=32,
+    metric=Metric.l2,
+    *,
+    intermediate_graph_degree=64,
+    alpha=1.2,
+    **kwargs,
+):
+    """A Vamana search graph of the rows, pruned by JVector's diversity rule.
+
+    The k-NN graph of the rows (``all_neighbors`` with
+    ``intermediate_graph_degree`` neighbors; its keyword arguments pass
+    through), pruned to ``graph_degree`` by ``vamana_prune``; then each node's
+    list together with its ``graph_degree`` incoming edges of lowest rank is
+    pruned again (Vamana's backward edges). The pruning reads the rows on the
+    GPU, so they must fit in memory.
+
+    Args:
+        rows (array): Rows ``[n, d]``, any real dtype.
+        graph_degree (int): Degree of the search graph.
+        metric (Metric): ``inner_product``, ``l2`` or ``cosine``.
+        intermediate_graph_degree (int): Degree of the k-NN graph pruned.
+        alpha (float): Vamana's alpha (JVector's default 1.2).
+
+    Returns:
+        array: ``int32 [n, graph_degree]``, -1 filled, the ``graph`` of
+        ``graph_search``.
+    """
+    if graph_degree > intermediate_graph_degree:
+        raise ValueError("graph_degree must be at most intermediate_graph_degree")
+    knn, _ = all_neighbors(rows, intermediate_graph_degree, metric, **kwargs)
+    x = _array(rows)
+    forward = vamana_prune(x, knn, graph_degree, metric, alpha=alpha)
+    incoming = _core._reverse_lists(forward, graph_degree)
+    both = mx.concatenate([forward, incoming], axis=1)
+    return vamana_prune(x, both, graph_degree, metric, alpha=alpha)
+
+
 @functools.wraps(_core.graph_search)
 def graph_search(base, graph, queries, k, metric=Metric.l2, **kwargs):
     if "algo" in kwargs:
@@ -162,6 +210,7 @@ for _f in (
     all_neighbors,
     graph_search,
     cagra_optimize,
+    vamana_prune,
 ):
     _f.__module__ = __name__
 

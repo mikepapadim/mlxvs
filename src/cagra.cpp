@@ -1,5 +1,6 @@
 // Copyright © 2026 mikepapadim
 
+#include "graph.h"
 #include "mlxvs/mlxvs.h"
 #include "utils.h"
 
@@ -77,6 +78,82 @@ int pow2_at_least(int x) {
 
 } // namespace
 
+namespace {
+
+// Reverse edges of graph [n, D] (-1 entries skipped): each node's rcap
+// incoming edges of lowest rank, as cuVS adds them one rank at a time.
+// Returns (rev [n, 2 * rcap] (rank, source) pairs, offset [n, D + 1]: incoming
+// edges of lower rank, the node's in-degree last).
+std::pair<mx::array, mx::array> reverse_edges(
+    const mx::array& graph,
+    int rcap) {
+  int n = graph.shape(0);
+  int d = graph.shape(1);
+  auto params = mx::array({n}, {1}, mx::int32);
+  auto hist = rev_count_kernel()(
+      {graph, params},
+      {{n, d}},
+      {mx::int32},
+      {n * d, 1, 1},
+      {256, 1, 1},
+      {{"D", d}},
+      0,
+      false,
+      {})[0];
+  auto offset = rev_offset_kernel()(
+      {hist, params},
+      {{n, d + 1}},
+      {mx::int32},
+      {n, 1, 1},
+      {256, 1, 1},
+      {{"D", d}},
+      std::nullopt,
+      false,
+      {})[0];
+  auto rev = rev_fill_kernel()(
+      {graph, offset, params},
+      {{n, d}, {n, 2 * rcap}},
+      {mx::int32, mx::int32},
+      {n * d, 1, 1},
+      {256, 1, 1},
+      {{"D", d}, {"RCAP", rcap}},
+      0,
+      false,
+      {})[1];
+  return {rev, offset};
+}
+
+const mx::fast::CustomKernelFunction& rev_list_kernel() {
+  static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
+      "mlxvs_cagra_rev_list",
+      {"rev", "offset", "params"},
+      {"lists"},
+      kernels::REV_LIST_SOURCE);
+  return kernel;
+}
+
+} // namespace
+
+namespace detail {
+
+mx::array reverse_lists(const mx::array& graph, int rcap) {
+  int n = graph.shape(0);
+  int d = graph.shape(1);
+  auto [rev, offset] = reverse_edges(graph, rcap);
+  return rev_list_kernel()(
+      {rev, offset, mx::array({n}, {1}, mx::int32)},
+      {{n, rcap}},
+      {mx::int32},
+      {n, 1, 1},
+      {256, 1, 1},
+      {{"D", d}, {"RCAP", rcap}},
+      std::nullopt,
+      false,
+      {})[0];
+}
+
+} // namespace detail
+
 mx::array cagra_optimize(
     const mx::array& knn_in,
     int graph_degree,
@@ -123,37 +200,7 @@ mx::array cagra_optimize(
       {})[0];
 
   auto params = mx::array({n}, {1}, mx::int32);
-  // reverse edges of lowest rank first, as cuVS adds them one rank at a time
-  auto hist = rev_count_kernel()(
-      {pruned, params},
-      {{n, d}},
-      {mx::int32},
-      {n * d, 1, 1},
-      {256, 1, 1},
-      {{"D", d}},
-      0,
-      false,
-      {})[0];
-  auto offset = rev_offset_kernel()(
-      {hist, params},
-      {{n, d + 1}},
-      {mx::int32},
-      {n, 1, 1},
-      {256, 1, 1},
-      {{"D", d}},
-      std::nullopt,
-      false,
-      {})[0];
-  auto rev = rev_fill_kernel()(
-      {pruned, offset, params},
-      {{n, d}, {n, 2 * rcap}},
-      {mx::int32, mx::int32},
-      {n * d, 1, 1},
-      {256, 1, 1},
-      {{"D", d}, {"RCAP", rcap}},
-      0,
-      false,
-      {})[1];
+  auto [rev, offset] = reverse_edges(pruned, rcap);
 
   return merge_kernel()(
       {pruned, rev, offset, params},

@@ -273,6 +273,53 @@ MLXVS_API mx::array cagra_build(
     const CagraOptions& options = {},
     mx::StreamOrDevice s = {});
 
+/**
+ * Vamana's robust pruning with JVector's diversity rule: of each row's
+ * candidates [n, C] (ids; -1, out-of-range ids, the row itself and repeats are
+ * skipped), ordered by similarity to the row, passes with alpha = 1.0, 1.2,
+ * ... up to alpha keep a candidate unless one already kept is more similar to
+ * it than alpha times its similarity to the row, until graph_degree are kept
+ * (JVector's VamanaDiversityProvider; similarities as JVector's: 1 / (1 +
+ * squared distance) for L2, (1 + dot) / 2 otherwise, on unit rows for
+ * Cosine). Returns int32 [n, graph_degree], most similar first, -1 filled.
+ * Requires C <= 256 and alpha >= 1. Runs on the GPU.
+ */
+MLXVS_API mx::array vamana_prune(
+    const mx::array& rows,
+    const mx::array& candidates,
+    int graph_degree,
+    Metric metric,
+    float alpha = 1.2f,
+    mx::StreamOrDevice s = {});
+
+/** Options of vamana_build. */
+struct VamanaOptions {
+  /** Degree of the k-NN graph pruned first (at most 128 with NN-Descent). */
+  int intermediate_graph_degree = 64;
+
+  /** Degree of the result. */
+  int graph_degree = 32;
+
+  /** Vamana's alpha: larger keeps longer edges. JVector's default. */
+  float alpha = 1.2f;
+
+  /** How the k-NN graph is built: all_neighbors's options. */
+  AllNeighborsOptions knn;
+};
+
+/**
+ * A Vamana search graph of rows [n, d]: all_neighbors with
+ * intermediate_graph_degree neighbors, vamana_prune to graph_degree, then each
+ * node's list together with its graph_degree incoming edges of lowest rank
+ * pruned again (Vamana's backward edges). Returns int32 [n, graph_degree] for
+ * graph_search, -1 filled.
+ */
+MLXVS_API mx::array vamana_build(
+    const mx::array& rows,
+    Metric metric,
+    const VamanaOptions& options = {},
+    mx::StreamOrDevice s = {});
+
 /** How graph_search lays out a query's work, as cuVS's cagra::search_algo. */
 enum class SearchAlgo {
   /**

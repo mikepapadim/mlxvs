@@ -52,11 +52,14 @@ class CagraIndex:
         *,
         intermediate_graph_degree=64,
         dtype="float32",
+        graph="cagra",
+        alpha=1.2,
         **kwargs,
     ):
         """Builds the index of the rows, as cuVS's ``cagra.build``.
 
-        The graph is ``cagra_build``'s (keyword arguments such as ``algo``,
+        The graph is ``cagra_build``'s, or ``vamana_build``'s with
+        ``graph="vamana"`` (keyword arguments such as ``algo``,
         ``n_clusters`` or ``verbose`` pass through to ``all_neighbors``).
 
         Args:
@@ -68,20 +71,36 @@ class CagraIndex:
             intermediate_graph_degree (int): Degree of the k-NN graph pruned.
             dtype (str): How the dataset is stored for search: ``"float32"``
               or ``"float16"``.
+            graph (str): How the k-NN graph is pruned: ``"cagra"`` (CAGRA's
+              rank-based pruning, needs no distances) or ``"vamana"``
+              (JVector's diversity rule, as JVector builds its graphs).
+            alpha (float): Vamana's alpha, with ``graph="vamana"``.
 
         Returns:
             CagraIndex
         """
         if dtype not in _DTYPES:
             raise ValueError(f"dtype must be one of {list(_DTYPES)}")
+        if graph not in ("cagra", "vamana"):
+            raise ValueError('graph must be "cagra" or "vamana"')
         metric = getattr(metric, "name", metric)
-        graph = mlxvs.cagra_build(
-            rows,
-            graph_degree,
-            metric,
-            intermediate_graph_degree=intermediate_graph_degree,
-            **kwargs,
-        )
+        if graph == "vamana":
+            graph = mlxvs.vamana_build(
+                rows,
+                graph_degree,
+                metric,
+                intermediate_graph_degree=intermediate_graph_degree,
+                alpha=alpha,
+                **kwargs,
+            )
+        else:
+            graph = mlxvs.cagra_build(
+                rows,
+                graph_degree,
+                metric,
+                intermediate_graph_degree=intermediate_graph_degree,
+                **kwargs,
+            )
         dataset = mlxvs._array(rows)
         if metric == "cosine":
             dataset = _unit_rows(dataset)

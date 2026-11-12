@@ -59,6 +59,13 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   expanded are dropped. At the end each threadgroup writes its 32 best (claiming the non-parents in the traversed
   set, so each node comes from one threadgroup) and a top-k over all of them gives the result. Everything stays within 16 KB of threadgroup memory where it can: Metal allows 32 KB, but its
   shader validation (run in CI) keeps a shadow copy and counts every byte twice.
+- `vamana_prune`: JVector's `VamanaDiversityProvider.retainDiverse` on the GPU. Per chunk of nodes (gathered rows
+  near 256 MB), the candidates' rows are gathered and two batched matrix multiplies give the node-candidate and
+  candidate-candidate dot products, turned into JVector's similarities (1 / (1 + squared distance) from norms and
+  dot products for L2, (1 + dot) / 2 otherwise). One thread per node then orders its candidates (insertion sort,
+  repeats dropped) and runs the passes alpha = 1.0, 1.2, ... over them, reading the similarities from device
+  memory. `vamana_build` prunes the k-NN graph, adds each node's incoming edges of lowest rank (the reverse-edge
+  passes of `cagra_optimize`, shared) and prunes the union again.
 - `cagra_optimize`: five kernels. Prune: one threadgroup per node X loads N(X) into a threadgroup id -> rank table,
   then for every pair (i, r) reads Y = N(N(X)[i])[r] and, if Y is in N(X) at rank j > max(i, r), counts a detour
   of the edge X -> Y; each edge's place in the output is the number of edges with fewer detours (or as many and a

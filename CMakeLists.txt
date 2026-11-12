@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mlxvs VERSION 0.3.0 LANGUAGES CXX)
+project(mlxvs VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,7 +27,8 @@ endif()
 find_package(MLX CONFIG REQUIRED)
 
 add_library(mlxvs STATIC src/knn.cpp src/kmeans.cpp src/nndescent.cpp
-                         src/all_neighbors.cpp src/search.cpp src/cagra.cpp)
+                         src/all_neighbors.cpp src/search.cpp src/cagra.cpp
+                         src/vamana.cpp)
 target_include_directories(mlxvs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(mlxvs PUBLIC mlx)
 # IOKit: the GPU core count (graph_search picks single- or multi-CTA by it)
@@ -52,6 +53,9 @@ if(MLXVS_BUILD_TESTS)
   add_executable(test_cagra tests/test_cagra.cpp)
   target_link_libraries(test_cagra PRIVATE mlxvs)
   add_test(NAME test_cagra COMMAND test_cagra)
+  add_executable(test_vamana tests/test_vamana.cpp)
+  target_link_libraries(test_vamana PRIVATE mlxvs)
+  add_test(NAME test_vamana COMMAND test_vamana)
 endif()
 
 if(MLXVS_BUILD_PYTHON)

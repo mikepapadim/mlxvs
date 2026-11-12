@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 (2026-11-12)
+
+- `vamana_prune`: Vamana's robust pruning with JVector's diversity rule (`VamanaDiversityProvider`: passes with
+  alpha = 1.0, 1.2, ... over the candidates by similarity, JVector's similarities) on the GPU; it equals a CPU
+  reference of JVector's rule on every row of the tests.
+- `vamana_build`: k-NN graph, `vamana_prune`, then each node's list with its incoming edges of lowest rank pruned
+  again; `CagraIndex.build(..., graph="vamana", alpha=1.2)`. SIFT1M, degree 32 from 64 candidates: built in 15 s,
+  recall@10 0.974 at `itopk_size` 64 (CAGRA's graph 0.980), and the same in JVector after `save_jvector`.
+- The reverse-edge passes of `cagra_optimize` are shared with `vamana_build`.
+
 ## 0.3.0 (2026-11-12)
 
 - `graph_search` multi-CTA, as cuVS's `search_multi_cta`: `max(search_width, itopk_size / 32)` threadgroups per

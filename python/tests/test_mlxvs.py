@@ -496,3 +496,35 @@ def test_cagra_index_save_jvector(tmp_path, metric):
     assert len(tail) == 12
     assert np.frombuffer(tail[:8], dtype=">i8")[0] == footer
     assert np.frombuffer(tail[8:], dtype=">u4")[0] == 0x4A564244
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine", "inner_product"])
+def test_vamana_build_search(metric):
+    x = _low_rank(6200)
+    base, queries = x[:6000], x[6000:]
+    graph = mlxvs.vamana_build(base, 16, metric, intermediate_graph_degree=32)
+    g = np.asarray(graph)
+    assert g.shape == (6000, 16) and g.dtype == np.int32
+    valid = g >= 0
+    assert (g[valid] < 6000).all() and (g != np.arange(6000)[:, None]).all()
+    if metric != "inner_product":
+        # (1 + dot) / 2 on rows that are not unit keeps fewer edges, as JVector
+        assert valid.sum(1).mean() > 8
+    ids, _ = mlxvs.graph_search(base, graph, queries, 10, metric)
+    exact, _ = mlxvs.brute_force_knn(base, queries, 10, metric)
+    assert _recall(ids, exact) > 0.95
+
+
+def test_vamana_prune_alpha_and_index():
+    x = _low_rank(3000)
+    knn, _ = mlxvs.all_neighbors(x, 32, "l2", algo="brute_force", n_clusters=1)
+    tight = (np.asarray(mlxvs.vamana_prune(x, knn, 32, alpha=1.0)) >= 0).sum()
+    loose = (np.asarray(mlxvs.vamana_prune(x, knn, 32, alpha=2.0)) >= 0).sum()
+    assert loose > tight  # a larger alpha keeps more (longer) edges
+    with pytest.raises(ValueError):
+        mlxvs.vamana_prune(x, knn, 64)
+    index = mlxvs.CagraIndex.build(x, 16, graph="vamana")
+    ids, _ = index.search(x[:20], k=1)
+    assert np.asarray(ids)[:, 0].tolist() == list(range(20))
+    with pytest.raises(ValueError):
+        mlxvs.CagraIndex.build(x, 16, graph="hnsw")

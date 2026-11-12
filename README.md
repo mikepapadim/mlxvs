@@ -37,13 +37,14 @@ deduplication, for exact k-NN ground truth, or as the build step of a graph inde
 | `all_neighbors(rows, k)` | k-NN graph built in overlapping k-means clusters, one on the GPU at a time; reads a NumPy array or memory-mapped file larger than memory where it is | `all_neighbors::build` |
 | `cagra_build(rows, graph_degree)` | Search graph: k-NN graph (`all_neighbors`) pruned by `cagra_optimize` | `cagra::build` |
 | `cagra_optimize(knn_graph, graph_degree)` | CAGRA's rank-based pruning (fewest two-hop detours) plus reverse edges | `cagra::optimize` |
+| `vamana_build(rows, graph_degree)`, `vamana_prune(rows, candidates, graph_degree, alpha=1.2)` | Vamana's robust pruning with JVector's diversity rule (the graph JVector builds), forward then with reverse edges; `CagraIndex.build(..., graph="vamana")` | |
 | `graph_search(base, graph, queries, k)` | Approximate k-NN of queries by beam search of a graph: one threadgroup per query for batches, several per query for a few queries (CAGRA's single- and multi-CTA search) | `cagra::search` |
 | `CagraIndex.build(rows, graph_degree)`, `.search(queries, k)`, `.save(path)`, `CagraIndex.load(path)` | A search index: the dataset (float32 or float16, normalized for cosine) and its CAGRA graph, stored once for search; one `.safetensors` file | `cagra::build`, `search`, `serialize` |
 | `CagraIndex.save_hnswlib(path)` | The index in hnswlib's format: build on the GPU, serve with hnswlib on any CPU | `cagra::serialize_to_hnswlib` |
 | `CagraIndex.save_jvector(path)` | The index in JVector's on-disk format (`OnDiskGraphIndex`, JVector 4): build on the GPU, search from Java; see [examples/jvector](examples/jvector) | |
 | `NearestNeighbors(n_neighbors).fit(X).kneighbors(Q)` | scikit-learn's interface over the above, NumPy in and out | |
 
-Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: Vamana pruning, a C API; see
+Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. Next: a C API; see
 [Roadmap](#roadmap).
 
 ## 1. Install
@@ -228,8 +229,9 @@ from `bench_search.py`'s output.
 
 ## Roadmap
 
-1. Vamana alpha pruning (JVector's diversity rule) on the GPU.
-2. A C API for other languages (Java via Panama, as cuVS-java does).
+1. A C API for other languages (Java via Panama, as cuVS-java does).
+2. Vamana from search-path candidates, as DiskANN: pruned from k-NN lists only, `vamana_build`'s graph is a little
+   behind CAGRA's (SIFT1M, degree 32: recall@10 0.977 against 0.982 at `itopk_size` 64).
 3. int8 datasets; filtered search; seed nodes.
 
 How the kernels work: [docs/DESIGN.md](docs/DESIGN.md). Building, testing and code style:

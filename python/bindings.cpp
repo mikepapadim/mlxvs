@@ -6,6 +6,7 @@
 #include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
 
+#include "../src/graph.h"
 #include "mlxvs/mlxvs.h"
 
 namespace nb = nanobind;
@@ -188,6 +189,60 @@ NB_MODULE(_core, m) {
             tuple(array, array): ids ``int32 [n, k]`` (-1 where fewer were
             found) and distances ``float32 [n, k]``, as ``brute_force_knn``.
       )");
+
+  m.def(
+      "vamana_prune",
+      [](const mx::array& rows,
+         const mx::array& candidates,
+         int graph_degree,
+         mlxvs::Metric metric,
+         float alpha,
+         mx::StreamOrDevice s) {
+        return mlxvs::vamana_prune(
+            rows, candidates, graph_degree, metric, alpha, s);
+      },
+      "rows"_a,
+      "candidates"_a,
+      "graph_degree"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "alpha"_a = 1.2f,
+      "stream"_a = nb::none(),
+      R"(
+        Vamana's robust pruning with JVector's diversity rule.
+
+        Each row's candidates (ids; -1, out-of-range ids, the row itself and
+        repeats are skipped) are ordered by similarity to the row; passes with
+        alpha = 1.0, 1.2, ... up to ``alpha`` then keep a candidate unless one
+        already kept is more similar to it than ``alpha`` times its
+        similarity to the row, until ``graph_degree`` are kept, as JVector's
+        ``VamanaDiversityProvider``. Similarities are JVector's: 1 / (1 +
+        squared distance) for ``l2``, (1 + dot) / 2 otherwise.
+
+        Args:
+            rows (array): Rows ``[n, d]``, any real dtype.
+            candidates (array): Candidate ids ``[n, C]``, ``C <= 256``, such as
+              a k-NN graph.
+            graph_degree (int): The most neighbors kept, at most ``C``.
+            metric (Metric): ``inner_product``, ``l2`` or ``cosine``.
+            alpha (float): At least 1; larger keeps longer edges.
+            stream (Stream, optional): Stream or device. GPU only.
+
+        Returns:
+            array: ``int32 [n, graph_degree]``, most similar first, -1 filled.
+      )");
+
+  m.def(
+      "_reverse_lists",
+      [](const mx::array& graph, int rcap, mx::StreamOrDevice s) {
+        mx::StreamContext context(mx::to_stream(s, mx::Device::gpu));
+        auto g =
+            graph.dtype() == mx::int32 ? graph : mx::astype(graph, mx::int32);
+        return mlxvs::detail::reverse_lists(g, rcap);
+      },
+      "graph"_a,
+      "rcap"_a,
+      "stream"_a = nb::none());
 
   m.def(
       "cagra_optimize",

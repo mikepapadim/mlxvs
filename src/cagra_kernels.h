@@ -208,6 +208,40 @@ constexpr const char* REV_FILL_SOURCE = R"(
   }
 )";
 
+// REV_LIST_SOURCE, one thread per node: its reverse edges' sources in (rank,
+// source) order, -1 filled.
+// template: D, RCAP
+// inputs: rev [n, 2 * RCAP] int, offset [n, D + 1] int, params [n] int
+// outputs: lists [n, RCAP] int
+constexpr const char* REV_LIST_SOURCE = R"(
+  uint x = thread_position_in_grid.x;
+  int n = params[0];
+  if (x >= (uint)n) {
+    return;
+  }
+  size_t rrow = (size_t)x * (2 * RCAP);
+  int nrev = min(offset[(size_t)x * (D + 1) + D], RCAP);
+  int last_r = -1;
+  int last_x = -1;
+  for (int taken = 0; taken < RCAP; ++taken) {
+    int best_r = 0x7fffffff;
+    int best_x = 0x7fffffff;
+    for (int s = 0; s < nrev; ++s) {
+      int r = rev[rrow + 2 * s];
+      int v = rev[rrow + 2 * s + 1];
+      bool after_last = r > last_r || (r == last_r && v > last_x);
+      bool better = r < best_r || (r == best_r && v < best_x);
+      if (after_last && better) {
+        best_r = r;
+        best_x = v;
+      }
+    }
+    lists[(size_t)x * RCAP + taken] = taken < nrev ? best_x : -1;
+    last_r = best_r;
+    last_x = best_x;
+  }
+)";
+
 // Merge, one thread per node, as cuVS: the first D/2 forward edges are kept,
 // then the reverse edges (by rank of the edge in its source's list, then
 // source id) that are not there yet, then the remaining forward edges, up to
