@@ -126,6 +126,36 @@ static void index_case(mlxvs_metric metric, int graph, const char* name) {
           memcmp(ids, ids2, sizeof(int32_t) * nq * k) == 0,
       "from-graph ids equal");
 
+  /* a filter: even rows only */
+  uint32_t* words = calloc((n + 31) / 32, sizeof(uint32_t));
+  for (int i = 0; i < n; i += 2)
+    words[i / 32] |= 1u << (i % 32);
+  check(
+      mlxvs_index_search_filtered(index, q, nq, k, &sp, words, ids2, NULL) ==
+          MLXVS_OK,
+      "filtered search");
+  int even = 1;
+  for (int i = 0; i < nq * k; ++i)
+    even &= ids2[i] >= 0 && ids2[i] % 2 == 0;
+  check(even, "filtered ids allowed");
+  free(words);
+
+  /* seeds: each query's exact nearest row, one iteration */
+  int32_t* seeds = malloc(sizeof(int32_t) * nq);
+  for (int i = 0; i < nq; ++i)
+    seeds[i] = eids[i * k];
+  mlxvs_search_params one = sp;
+  one.max_iterations = 1;
+  check(
+      mlxvs_index_search_seeded(
+          index, q, nq, k, &one, NULL, seeds, 1, ids2, NULL) == MLXVS_OK,
+      "seeded search");
+  int seeded = 1;
+  for (int i = 0; i < nq; ++i)
+    seeded &= ids2[i * k] == seeds[i];
+  check(seeded, "seeds come back first");
+  free(seeds);
+
   int ok = r_single >= 0.95 && r_multi >= 0.95;
   printf(
       "%-6s %-22s recall@10 %.4f single-CTA, %.4f multi-CTA\n",

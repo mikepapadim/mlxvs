@@ -528,3 +528,34 @@ def test_vamana_prune_alpha_and_index():
     assert np.asarray(ids)[:, 0].tolist() == list(range(20))
     with pytest.raises(ValueError):
         mlxvs.CagraIndex.build(x, 16, graph="hnsw")
+
+
+@pytest.mark.parametrize("algo", ["single_cta", "multi_cta"])
+def test_graph_search_filter(algo):
+    x = _low_rank(8200)
+    base, queries = x[:8000], x[8000:]
+    allow = np.arange(8000) % 3 != 0
+    index = mlxvs.CagraIndex.build(base, 24)
+    ids, _ = index.search(queries, 10, algo=algo, filter=allow)
+    ids = np.asarray(ids)
+    assert allow[ids].all() and (ids >= 0).all()
+    kept = np.flatnonzero(allow)
+    exact, _ = mlxvs.brute_force_knn(base[kept], queries, 10)
+    assert _recall(ids, kept[np.asarray(exact)]) > 0.95
+    words = np.packbits(allow, bitorder="little").view(np.uint32)
+    ids2, _ = index.search(queries, 10, algo=algo, filter=words)
+    assert allow[np.asarray(ids2)].all()
+    with pytest.raises(ValueError):
+        index.search(queries, 10, filter=allow[:100])
+
+
+def test_graph_search_seeds():
+    x = _low_rank(5100)
+    base, queries = x[:5000], x[5000:]
+    index = mlxvs.CagraIndex.build(base, 16)
+    nearest, _ = mlxvs.brute_force_knn(base, queries, 1)
+    for algo in ("single_cta", "multi_cta"):
+        ids, _ = index.search(
+            queries, 5, algo=algo, max_iterations=1, seeds=np.asarray(nearest)
+        )
+        assert (np.asarray(ids)[:, 0] == np.asarray(nearest)[:, 0]).all()

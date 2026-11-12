@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -379,6 +380,28 @@ struct SearchOptions {
   int num_random_samplings = 1;
 
   unsigned long long seed = 0x128394;
+
+  /**
+   * Rows a search may return, as cuVS's bitset filter: bool [n] (true:
+   * allowed) or a bitset uint32 [ceil(n / 32)] (bit i % 32 of word i / 32 set:
+   * row i allowed). Rejected rows are still traversed (their neighbors lead to
+   * allowed ones) but leave the list once expanded and are never returned.
+   */
+  std::optional<mx::array> filter;
+
+  /**
+   * The fraction of rows the filter rejects, for multi-CTA's larger list as
+   * cuVS (itopk_size grows to k / (1 - rate) + (itopk_size - k) / sqrt(1 -
+   * rate)). Negative: computed from the filter.
+   */
+  float filtering_rate = -1.0f;
+
+  /**
+   * Start nodes per query, int [nq, num_seeds], as cuVS's seed nodes: the
+   * random start's first slots take them (out-of-range ids: random nodes).
+   * With multi-CTA they are spread over the query's threadgroups.
+   */
+  std::optional<mx::array> seeds;
 };
 
 /**

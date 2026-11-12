@@ -143,6 +143,38 @@ MLXVS_C_API int mlxvs_index_search(
     int32_t* ids,
     float* distances);
 
+/**
+ * mlxvs_index_search returning only rows the filter allows: filter is a
+ * bitset of (n + 31) / 32 uint32 words, bit i % 32 of word i / 32 set when row
+ * i may be returned (cuVS's bitset filter). Rejected rows are still traversed.
+ */
+MLXVS_C_API int mlxvs_index_search_filtered(
+    mlxvs_index index,
+    const float* queries,
+    int64_t nq,
+    int32_t k,
+    const mlxvs_search_params* params,
+    const uint32_t* filter,
+    int32_t* ids,
+    float* distances);
+
+/**
+ * mlxvs_index_search starting from given nodes, as cuVS's seed nodes: seeds
+ * holds nq rows of num_seeds int32 ids (out-of-range ids: random nodes).
+ * filter may be NULL (no filter) or a bitset as mlxvs_index_search_filtered's.
+ */
+MLXVS_C_API int mlxvs_index_search_seeded(
+    mlxvs_index index,
+    const float* queries,
+    int64_t nq,
+    int32_t k,
+    const mlxvs_search_params* params,
+    const uint32_t* filter,
+    const int32_t* seeds,
+    int32_t num_seeds,
+    int32_t* ids,
+    float* distances);
+
 /** Saves the index as .safetensors (as Python's CagraIndex.save). */
 MLXVS_C_API int mlxvs_index_save(mlxvs_index index, const char* path);
 

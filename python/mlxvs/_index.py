@@ -117,7 +117,9 @@ class CagraIndex:
             **kwargs: ``graph_search``'s options: ``itopk_size`` (default 64),
               ``search_width``, ``algo`` (``"auto"``, ``"single_cta"``,
               ``"multi_cta"``), ``max_iterations``, ``min_iterations``,
-              ``num_random_samplings``, ``seed``.
+              ``num_random_samplings``, ``seed``, ``filter`` (rows that may
+              be returned: a bool mask or a uint32 bitset), ``seeds`` (start
+              nodes per query, ``[nq, num_seeds]``).
 
         Returns:
             tuple(array, array): ids ``int32 [nq, k]`` and distances ``float32

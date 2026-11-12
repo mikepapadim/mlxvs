@@ -208,6 +208,34 @@ int mlxvs_index_search(
     const mlxvs_search_params* params,
     int32_t* ids,
     float* distances) {
+  return mlxvs_index_search_filtered(
+      index, queries, nq, k, params, nullptr, ids, distances);
+}
+
+int mlxvs_index_search_filtered(
+    mlxvs_index index,
+    const float* queries,
+    int64_t nq,
+    int32_t k,
+    const mlxvs_search_params* params,
+    const uint32_t* filter,
+    int32_t* ids,
+    float* distances) {
+  return mlxvs_index_search_seeded(
+      index, queries, nq, k, params, filter, nullptr, 0, ids, distances);
+}
+
+int mlxvs_index_search_seeded(
+    mlxvs_index index,
+    const float* queries,
+    int64_t nq,
+    int32_t k,
+    const mlxvs_search_params* params,
+    const uint32_t* filter,
+    const int32_t* seeds,
+    int32_t num_seeds,
+    int32_t* ids,
+    float* distances) {
   return guarded([&] {
     require(index != nullptr, "index must not be NULL.");
     require(ids != nullptr, "ids must not be NULL.");
@@ -236,6 +264,13 @@ int mlxvs_index_search(
     o.team_size = p.team_size;
     o.num_random_samplings = p.num_random_samplings;
     o.seed = p.seed;
+    if (filter != nullptr) {
+      int words = (int)((index->dataset.shape(0) + 31) / 32);
+      o.filter = mx::array(filter, {words}, mx::uint32);
+    }
+    if (seeds != nullptr && num_seeds > 0) {
+      o.seeds = mx::array(seeds, {(int)nq, num_seeds}, mx::int32);
+    }
     auto r = mlxvs::graph_search(index->dataset, index->graph, q, k, metric, o);
     size_t count = (size_t)nq * k;
     copy_out(r.ids, ids, count * sizeof(int32_t));

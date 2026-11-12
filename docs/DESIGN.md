@@ -59,6 +59,10 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   expanded are dropped. At the end each threadgroup writes its 32 best (claiming the non-parents in the traversed
   set, so each node comes from one threadgroup) and a top-k over all of them gives the result. Everything stays within 16 KB of threadgroup memory where it can: Metal allows 32 KB, but its
   shader validation (run in CI) keeps a shadow copy and counts every byte twice.
+- Filters and seeds (both `graph_search` kernels): the filter is a bitset in device memory. Single-CTA compacts its
+  list after every round, dropping expanded nodes the filter rejects (a prefix sum per SIMD group), and writes the
+  first k allowed entries; multi-CTA drops a rejected parent after expanding it and skips rejected entries at the
+  end. Seeds replace the random start's first slots (a draw index below `num_seeds`), as cuVS.
 - `vamana_prune`: JVector's `VamanaDiversityProvider.retainDiverse` on the GPU. Per chunk of nodes (gathered rows
   near 256 MB), the candidates' rows are gathered and two batched matrix multiplies give the node-candidate and
   candidate-candidate dot products, turned into JVector's similarities (1 / (1 + squared distance) from norms and

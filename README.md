@@ -98,6 +98,10 @@ graph = np.asarray(graph)  # results are mlx arrays; np.asarray converts without
 - Outputs: `int32` ids, `-1` where fewer neighbors exist; `float32` distances, squared for `"l2"`, similarities
   (larger is closer) for `"cosine"` and `"inner_product"`.
 - `help(mlxvs.nn_descent)` and the others document every parameter.
+- Filtered search: `index.search(queries, k, filter=mask)` returns only rows where `mask` (bool `[n]`) is True. As in
+  cuVS, prefer `algo="multi_cta"` when the filter rejects most rows: its list grows with the filtering rate (SIFT1M,
+  10% of rows allowed: recall@10 0.978, against 0.74 single-CTA at `itopk_size` 64). Below about 1% allowed,
+  `brute_force_knn` on the allowed rows is exact and fast.
 - Searching many times: use `CagraIndex`, or pass the same MLX array to `graph_search` each time. A NumPy array is
   copied to the GPU on every call, and `graph_search` with `"cosine"` recomputes the row norms on every call;
   `CagraIndex` stores the rows once, normalized.
@@ -241,16 +245,21 @@ from `bench_search.py`'s output.
 | `algo` = `"auto"` | `search_params::algo` | same rule: single-CTA for at least two queries per GPU core (cuVS: per SM) and `itopk_size` <= 256, else multi-CTA; no multi-kernel mode |
 | `team_size` = 0 (automatic) | `search_params::team_size` | same choice by dimension: 8, 16 or 32 lanes per distance |
 | `min_iterations` = 0 | `search_params::min_iterations` | same |
+| `filter=` bool mask or bitset | `bitset_filter` | same semantics: rejected rows traversed, never returned; multi-CTA's list grows with `filtering_rate` |
+| `seeds=` `[nq, num_seeds]` | `seed_ptr`, `num_seeds` | same for single-CTA; multi-CTA spreads a query's seeds over its threadgroups |
 | `max_iterations` = 0 (automatic) | `search_params::max_iterations` | same automatic value; stops earlier once every list entry is expanded |
 | `num_random_samplings` = 1 | `search_params::num_random_samplings` | same: itopk + width * degree start slots, each the nearest of this many random nodes; no seed nodes yet |
 | `int32` ids | `int64_t` ids | n < 2^31 rows |
 
 ## Roadmap
 
-1. Vamana from search-path candidates, as DiskANN: pruned from k-NN lists only, `vamana_build`'s graph is a little
-   behind CAGRA's (SIFT1M, degree 32: recall@10 0.977 against 0.982 at `itopk_size` 64).
-2. int8 datasets; filtered search; seed nodes.
-3. `save_hnswlib` and `save_jvector` in the C API.
+1. int8 datasets; per-query filters (cuVS's bitmap).
+2. `save_hnswlib` and `save_jvector` in the C API.
+
+Tried and left out: Vamana graphs from search-path candidates, as DiskANN builds them (each row searched over the
+CAGRA graph, its path and result list pruned with JVector's rule). On SIFT1M at degree 32 they stay below CAGRA's
+graph (recall@10 0.977 against 0.980 at `itopk_size` 64) for four to five times the build time, so CAGRA's pruning
+is the default and `vamana_build` (from k-NN lists) is there for JVector's rule.
 
 How the kernels work: [docs/DESIGN.md](docs/DESIGN.md). Building, testing and code style:
 [CONTRIBUTING.md](CONTRIBUTING.md).

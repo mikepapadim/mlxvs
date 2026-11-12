@@ -2,6 +2,7 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
@@ -287,8 +288,14 @@ NB_MODULE(_core, m) {
          int min_iterations,
          int num_random_samplings,
          unsigned long long seed,
+         std::optional<mx::array> filter,
+         float filtering_rate,
+         std::optional<mx::array> seeds,
          mx::StreamOrDevice s) {
         mlxvs::SearchOptions options;
+        options.filter = filter;
+        options.seeds = seeds;
+        options.filtering_rate = filtering_rate;
         options.algo = algo;
         options.team_size = team_size;
         options.itopk_size = itopk_size;
@@ -315,6 +322,9 @@ NB_MODULE(_core, m) {
       "min_iterations"_a = 0,
       "num_random_samplings"_a = 1,
       "seed"_a = 0x128394,
+      "filter"_a = nb::none(),
+      "filtering_rate"_a = -1.0f,
+      "seeds"_a = nb::none(),
       "stream"_a = nb::none(),
       R"(
         Approximate k-nearest neighbors of every query by searching a graph.
@@ -351,6 +361,17 @@ NB_MODULE(_core, m) {
             num_random_samplings (int): Each random start slot takes the
               nearest of this many random nodes.
             seed (int): Seed of the random start nodes.
+            filter (array, optional): Rows that may be returned, as cuVS's
+              bitset filter: bool ``[n]`` (True: allowed) or a bitset
+              ``uint32 [ceil(n / 32)]``. Rejected rows are still traversed
+              but never returned. With few rows allowed, use multi-CTA (its
+              list grows with the filtering rate, as cuVS) or a larger
+              ``itopk_size``.
+            filtering_rate (float): The fraction of rows the filter rejects,
+              for multi-CTA's list length; negative: computed.
+            seeds (array, optional): Start nodes per query, integers
+              ``[nq, num_seeds]`` (out-of-range: random), as cuVS's seed
+              nodes.
             stream (Stream, optional): Stream or device. GPU only.
 
         Returns:

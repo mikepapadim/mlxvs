@@ -34,7 +34,7 @@ __all__ = [
     "vamana_build",
     "vamana_prune",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 
 def __getattr__(name):
@@ -78,6 +78,18 @@ def _enum(kind, value):
             names = ", ".join(repr(n) for n in kind.__members__)
             raise ValueError(f"unknown {kind.__name__} {value!r}; one of {names}")
     return value
+
+
+def _filter(f):
+    """A bool mask or a uint32 bitset, as an MLX array graph_search takes."""
+    if isinstance(f, mx.array):
+        return f
+    import numpy as np
+
+    f = np.asarray(f)
+    if f.dtype != np.bool_ and f.dtype != np.uint32:
+        raise ValueError("filter must be a bool mask or a uint32 bitset")
+    return mx.array(f)
 
 
 def _metric(metric):
@@ -188,6 +200,10 @@ def vamana_build(
 def graph_search(base, graph, queries, k, metric=Metric.l2, **kwargs):
     if "algo" in kwargs:
         kwargs["algo"] = _enum(SearchAlgo, kwargs["algo"])
+    if kwargs.get("filter") is not None:
+        kwargs["filter"] = _filter(kwargs["filter"])
+    if kwargs.get("seeds") is not None:
+        kwargs["seeds"] = _array(kwargs["seeds"]).astype(mx.int32)
     return _core.graph_search(
         _array(base), _array(graph), _array(queries), k, _metric(metric), **kwargs
     )

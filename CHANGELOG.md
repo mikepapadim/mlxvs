@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 (2026-11-12)
+
+- Filtered search, as cuVS's bitset filter: `graph_search(..., filter=)` (and `CagraIndex.search`) takes a bool mask
+  `[n]` or a bitset `uint32 [ceil(n / 32)]`. Rejected rows are still traversed but leave the list once expanded
+  and are never returned; multi-CTA's list grows with the filtering rate as cuVS's (`filtering_rate`, computed from
+  the filter by default). SIFT1M, 10% of rows allowed: recall@10 0.978 multi-CTA (single-CTA, as in cuVS, 0.74 at
+  `itopk_size` 64 and 0.86 at 256).
+- Seed nodes, as cuVS's `seed_ptr`: `seeds=` `[nq, num_seeds]` start nodes per query.
+- C API: `mlxvs_index_search_filtered` and `mlxvs_index_search_seeded`.
+- The README's roadmap records an experiment left out: Vamana graphs from search-path candidates (DiskANN's) stay
+  below CAGRA's graph on SIFT1M for four to five times the build time.
+
 ## 0.5.0 (2026-11-12)
 
 - A C API, `include/mlxvs/mlxvs_c.h` in `libmlxvs_c.dylib`: an index handle (`mlxvs_index_build`, `_search`,

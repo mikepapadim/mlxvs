@@ -38,6 +38,11 @@ inline uint mlxvs_mix(uint x) {
   x ^= x >> 16;
   return x;
 }
+// Whether the filter (a bitset over the rows, bit set: allowed) allows id.
+template <typename F>
+inline bool mlxvs_allowed(F filter, int id) {
+  return ((filter[id >> 5] >> (id & 31)) & 1u) != 0;
+}
 inline float4 mlxvs_load4(const device float* p) {
   return float4(*(const device packed_float4*)p);
 }
@@ -196,7 +201,9 @@ inline void mlxvs_dev_remove(device atomic_int* table, uint bits, int id) {
 // template: M (list length, multiple of 32), CP (candidate slots, power of
 // two), QCAP (query floats in threadgroup memory, 1 when read from device),
 // QSHARED, HBITS (log2 of the visited-set slots), TEAM (lanes per distance:
-// 4, 8, 16 or 32)
+// 4, 8, 16 or 32), FILTER (filter [ceil(n / 32)] uint: bit set, row allowed;
+// expanded nodes it rejects leave the list, and only allowed ones are output),
+// NSEEDS (seeds [nq, NSEEDS] int: the first start slots' nodes, as cuVS)
 // inputs: base [n, d] float, graph [n, deg] int, queries [nq, d] float,
 // inv_norm [n] float (cosine only), params [n, d, deg, k, W, max_iter, metric,
 // seed, n_rand, rand_slots] int
@@ -232,6 +239,7 @@ constexpr const char* SEARCH_SOURCE = R"(
   threadgroup int parents[32];
   threadgroup int round_size;
   threadgroup int round_reset;
+  threadgroup uint sg_count[THREADS / 32];
 
   if (QSHARED) {
     for (int j = (int)lid; j < d; j += (int)THREADS) {
@@ -315,6 +323,11 @@ constexpr const char* SEARCH_SOURCE = R"(
           uint g = slot + (uint)rand_slots * (uint)j;
           uint h = mlxvs_mix(seed ^ mlxvs_mix(q * 0x9e3779b9u + g * 0x85ebca6bu));
           int node = (int)(h % (uint)n);
+          if (g < (uint)NSEEDS) {
+            // the query's seed nodes first, as cuVS
+            int sn = seeds[(size_t)q * NSEEDS + g];
+            node = sn >= 0 && sn < n ? sn : node;
+          }
           float sc = QSHARED
               ? mlxvs_score<TEAM>(base, (threadgroup const float*)qv, inv_norm, node, d, metric, lane, active)
               : mlxvs_score<TEAM>(base, queries + qrow, inv_norm, node, d, metric, lane, active);
@@ -433,14 +446,70 @@ constexpr const char* SEARCH_SOURCE = R"(
     }
     cur ^= 1u;
     threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (FILTER) {
+      // expanded nodes the filter rejects leave the list, as cuVS: compact it
+      // into the other half (M <= THREADS)
+      bool keep = false;
+      float ks = -INFINITY;
+      int kv = -1;
+      if (lid < M) {
+        kv = top_i[cur * M + lid];
+        ks = top_s[cur * M + lid];
+        keep = kv >= 0 || (kv < -1 && mlxvs_allowed(filter, -kv - 2));
+      }
+      uint before = simd_prefix_exclusive_sum(keep ? 1u : 0u);
+      if (lane == 31) {
+        sg_count[sg] = before + (keep ? 1u : 0u);
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      uint offset = 0;
+      for (uint g = 0; g < sg; ++g) {
+        offset += sg_count[g];
+      }
+      uint dst = (cur ^ 1u) * M;
+      if (lid < M) {
+        top_s[dst + lid] = -INFINITY;
+        top_i[dst + lid] = -1;
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if (keep) {
+        top_s[dst + offset + before] = ks;
+        top_i[dst + offset + before] = kv;
+      }
+      cur ^= 1u;
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
   }
 
-  for (uint i = lid; i < (uint)k; i += THREADS) {
-    float s = top_s[cur * M + i];
-    int v = mlxvs_node(top_i[cur * M + i]);
-    bool ok = v >= 0;
-    out_ids[(size_t)q * k + i] = v;
-    out_scores[(size_t)q * k + i] = metric == 1 ? (ok ? -s : INFINITY) : (ok ? s : -INFINITY);
+  // the first k entries of the list (the filter allows), then -1
+  bool ok = false;
+  float s = -INFINITY;
+  int v = -1;
+  if (lid < M) {
+    s = top_s[cur * M + lid];
+    v = mlxvs_node(top_i[cur * M + lid]);
+    ok = v >= 0 && (!FILTER || mlxvs_allowed(filter, v));
+  }
+  uint before = simd_prefix_exclusive_sum(ok ? 1u : 0u);
+  if (lane == 31) {
+    sg_count[sg] = before + (ok ? 1u : 0u);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  uint offset = 0;
+  uint total = 0;
+  for (uint g = 0; g < THREADS / 32; ++g) {
+    offset += g < sg ? sg_count[g] : 0u;
+    total += sg_count[g];
+  }
+  uint at = offset + before;
+  if (ok && at < (uint)k) {
+    out_ids[(size_t)q * k + at] = v;
+    out_scores[(size_t)q * k + at] = metric == 1 ? -s : s;
+  }
+  for (uint i = total + lid; i < (uint)k; i += THREADS) {
+    out_ids[(size_t)q * k + i] = -1;
+    out_scores[(size_t)q * k + i] = metric == 1 ? INFINITY : -INFINITY;
   }
 )";
 
@@ -468,7 +537,7 @@ constexpr int SEARCH_MC_BUFFER_MAX = 256;
 // final top-k.
 //
 // template: B (buffer, multiple of 32), BP (power of two >= B), QCAP, QSHARED,
-// VBITS (log2 of the visited-set slots), TEAM
+// VBITS (log2 of the visited-set slots), TEAM, FILTER, NSEEDS (as above)
 // inputs: base [n, d] float, graph [n, deg] int, queries [nq, d] float,
 // inv_norm [n] float (cosine only), params [n, d, deg, max_iter, min_iter,
 // metric, seed, n_rand, num_cta, nq, tbits] int
@@ -531,6 +600,12 @@ constexpr const char* SEARCH_MC_SOURCE = R"(
     for (int j = 0; j < n_rand; ++j) {
       uint g = block + blocks * (c + (uint)deg * (uint)j);
       int node = (int)(mlxvs_mix(seed ^ mlxvs_mix(g)) % (uint)n);
+      // the query's seed nodes, spread over its threadgroups
+      uint local = cta + num_cta * (c + (uint)deg * (uint)j);
+      if (local < (uint)NSEEDS) {
+        int sn = seeds[(size_t)q * NSEEDS + local];
+        node = sn >= 0 && sn < n ? sn : node;
+      }
       float sc = QSHARED
           ? mlxvs_score<TEAM>(base, (threadgroup const float*)qv, inv_norm, node, d, metric, lane, active)
           : mlxvs_score<TEAM>(base, queries + qrow, inv_norm, node, d, metric, lane, active);
@@ -691,6 +766,12 @@ constexpr const char* SEARCH_MC_SOURCE = R"(
         buf_s[i] = -INFINITY;
       }
     }
+    // an expanded parent the filter rejects leaves the buffer, as cuVS
+    if (FILTER && lid == 0 && ps >= 0 &&
+        !mlxvs_allowed(filter, mlxvs_node(buf_i[ps]))) {
+      buf_i[ps] = -1;
+      buf_s[ps] = -INFINITY;
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
 
@@ -705,9 +786,10 @@ constexpr const char* SEARCH_MC_SOURCE = R"(
       bool valid = false;
       int node = -1;
       if (v < -1) {
-        valid = true;
+        valid = !FILTER || mlxvs_allowed(filter, -v - 2);
         node = -v - 2;
-      } else if (v >= 0 && offset < ITOPK && mlxvs_dev_insert(trav, tbits, v)) {
+      } else if (v >= 0 && offset < ITOPK && (!FILTER || mlxvs_allowed(filter, v)) &&
+                 mlxvs_dev_insert(trav, tbits, v)) {
         valid = true;
         node = v;
       }

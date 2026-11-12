@@ -276,6 +276,114 @@ int main() {
         g);
   }
   {
+    // filtered search: only allowed rows returned, recall against the exact
+    // neighbors among them
+    int n = 20000, d = 32, nq = 500, k = 10;
+    auto all = low_rank(n + nq, d, 10, 17);
+    mx::array x(all.data(), {n, d}, mx::float32);
+    mx::array q(all.data() + (size_t)n * d, {nq, d}, mx::float32);
+    auto g = knn_graph(x, 32, Metric::L2);
+    for (int every : {4, 10}) {
+      // every-th row rejected (75%), or only every-th allowed (10%)
+      std::vector<uint8_t> allow(n);
+      std::vector<int> kept;
+      for (int i = 0; i < n; ++i) {
+        allow[i] = every == 4 ? i % 4 != 0 : i % 10 == 0;
+        if (allow[i]) {
+          kept.push_back(i);
+        }
+      }
+      mx::array mask(allow.data(), {n}, mx::uint8);
+      mask = mx::astype(mask, mx::bool_);
+      mx::array kept_ids(kept.data(), {(int)kept.size()}, mx::int32);
+      auto exact =
+          mlxvs::brute_force_knn(mx::take(x, kept_ids, 0), q, k, Metric::L2);
+      for (auto algo :
+           {mlxvs::SearchAlgo::SingleCta, mlxvs::SearchAlgo::MultiCta}) {
+        mlxvs::SearchOptions o;
+        o.algo = algo;
+        o.filter = mask;
+        auto got = mlxvs::graph_search(x, g, q, k, Metric::L2, o);
+        mx::eval(exact.distances, got.ids, got.distances);
+        const int* ids = got.ids.data<int>();
+        const float* gdist = got.distances.data<float>();
+        const float* edist = exact.distances.data<float>();
+        long hits = 0, missing = 0;
+        bool allowed_only = true;
+        for (int i = 0; i < nq; ++i) {
+          float kth = edist[(size_t)i * k + k - 1];
+          for (int j = 0; j < k; ++j) {
+            int id = ids[(size_t)i * k + j];
+            missing += id == -1;
+            allowed_only &= id == -1 || (id >= 0 && id < n && allow[id]);
+            hits +=
+                gdist[(size_t)i * k + j] <= kth + 1e-5f * std::max(1.0f, kth);
+          }
+        }
+        double recall = hits / (double)((long)nq * k);
+        bool ok = allowed_only && recall >= (every == 4 ? 0.95 : 0.8);
+        std::printf(
+            "%-6s filter %s %s: recall %.4f, %ld missing%s\n",
+            ok ? "PASS" : "FAIL",
+            every == 4 ? "75% allowed" : "10% allowed",
+            algo == mlxvs::SearchAlgo::SingleCta ? "single-CTA" : "multi-CTA",
+            recall,
+            missing,
+            allowed_only ? "" : ", REJECTED rows returned");
+        check(ok, "filtered search");
+      }
+    }
+    // the same filter as a bitset
+    std::vector<uint32_t> words((n + 31) / 32, 0);
+    for (int i = 0; i < n; ++i) {
+      if (i % 4 != 0) {
+        words[i / 32] |= 1u << (i % 32);
+      }
+    }
+    mlxvs::SearchOptions o;
+    o.filter = mx::array(words.data(), {(int)words.size()}, mx::uint32);
+    auto got = mlxvs::graph_search(x, g, q, k, Metric::L2, o);
+    mx::eval(got.ids);
+    bool ok = true;
+    for (size_t i = 0; i < (size_t)nq * k; ++i) {
+      ok &= got.ids.data<int>()[i] % 4 != 0;
+    }
+    std::printf("%-6s filter as a bitset\n", ok ? "PASS" : "FAIL");
+    check(ok, "bitset filter");
+  }
+  {
+    // seed nodes: with one iteration, the exact nearest row given as a seed
+    // comes back first
+    int n = 20000, d = 32, nq = 300;
+    auto all = low_rank(n + nq, d, 10, 23);
+    mx::array x(all.data(), {n, d}, mx::float32);
+    mx::array q(all.data() + (size_t)n * d, {nq, d}, mx::float32);
+    auto g = knn_graph(x, 16, Metric::L2);
+    auto exact = mlxvs::brute_force_knn(x, q, 1, Metric::L2);
+    auto seeds = mx::concatenate({exact.ids, mx::full({nq, 3}, -1)}, 1);
+    for (auto algo :
+         {mlxvs::SearchAlgo::SingleCta, mlxvs::SearchAlgo::MultiCta}) {
+      mlxvs::SearchOptions o;
+      o.algo = algo;
+      o.max_iterations = 1;
+      o.seeds = seeds;
+      auto got = mlxvs::graph_search(x, g, q, 5, Metric::L2, o);
+      mx::eval(exact.ids, got.ids);
+      int first = 0;
+      for (int i = 0; i < nq; ++i) {
+        first += got.ids.data<int>()[i * 5] == exact.ids.data<int>()[i];
+      }
+      bool ok = first == nq;
+      std::printf(
+          "%-6s seeds %s: %d/%d nearest first\n",
+          ok ? "PASS" : "FAIL",
+          algo == mlxvs::SearchAlgo::SingleCta ? "single-CTA" : "multi-CTA",
+          first,
+          nq);
+      check(ok, "seed nodes");
+    }
+  }
+  {
     // a dimension not a multiple of 4 (the scalar tail of each distance), and
     // every team size
     int n = 5000, d = 37, nq = 200;

@@ -4,6 +4,7 @@
 #include "utils.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -22,7 +23,7 @@ namespace {
 const mx::fast::CustomKernelFunction& search_kernel() {
   static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
       "mlxvs_graph_search",
-      {"base", "graph", "queries", "inv_norm", "params"},
+      {"base", "graph", "queries", "inv_norm", "filter", "seeds", "params"},
       {"out_ids", "out_scores"},
       kernels::SEARCH_SOURCE,
       kernels::SEARCH_HEADER);
@@ -32,7 +33,7 @@ const mx::fast::CustomKernelFunction& search_kernel() {
 const mx::fast::CustomKernelFunction& search_mc_kernel() {
   static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
       "mlxvs_graph_search_mc",
-      {"base", "graph", "queries", "inv_norm", "params"},
+      {"base", "graph", "queries", "inv_norm", "filter", "seeds", "params"},
       {"out_ids", "out_scores", "traversed"},
       kernels::SEARCH_MC_SOURCE,
       kernels::SEARCH_HEADER,
@@ -100,6 +101,10 @@ struct Prepared {
   mx::array inv_norm;
   int metric_code;
   int team;
+  mx::array filter; // bitset words, or one word when there is no filter
+  bool filtered;
+  mx::array seeds; // [nq, num_seeds] int32, or one dummy entry
+  int num_seeds;
 };
 
 // Lanes per distance, as cuVS picks its team size: the instance whose block
@@ -191,6 +196,9 @@ Neighbors search_multi_cta(
     int q1 = std::min(nq, q0 + block);
     int bq = q1 - q0;
     auto qs = mx::slice(in.queries, {q0, 0}, {q1, d});
+    auto qseeds = in.num_seeds > 0
+        ? mx::slice(in.seeds, {q0, 0}, {q1, in.num_seeds})
+        : in.seeds;
     auto params = mx::array(
         {n,
          d,
@@ -206,7 +214,7 @@ Neighbors search_multi_cta(
         {11},
         mx::int32);
     auto out = search_mc_kernel()(
-        {in.base, in.graph, qs, in.inv_norm, params},
+        {in.base, in.graph, qs, in.inv_norm, in.filter, qseeds, params},
         {{bq, cols}, {bq, cols}, {bq, 1 << tbits}},
         {mx::int32, mx::float32, mx::int32},
         {num_cta * kernels::SEARCH_MC_THREADS, bq, 1},
@@ -216,7 +224,9 @@ Neighbors search_multi_cta(
          {"QCAP", qcap},
          {"QSHARED", qshared},
          {"VBITS", vbits},
-         {"TEAM", in.team}},
+         {"TEAM", in.team},
+         {"FILTER", in.filtered},
+         {"NSEEDS", in.num_seeds}},
         -1.0f,
         false,
         {});
@@ -288,6 +298,9 @@ Neighbors search_single_cta(
     int q1 = std::min(nq, q0 + SEARCH_QUERY_BLOCK);
     int bq = q1 - q0;
     auto qs = mx::slice(in.queries, {q0, 0}, {q1, d});
+    auto qseeds = in.num_seeds > 0
+        ? mx::slice(in.seeds, {q0, 0}, {q1, in.num_seeds})
+        : in.seeds;
     auto params = mx::array(
         {n,
          d,
@@ -302,7 +315,7 @@ Neighbors search_single_cta(
         {10},
         mx::int32);
     auto out = search_kernel()(
-        {in.base, in.graph, qs, in.inv_norm, params},
+        {in.base, in.graph, qs, in.inv_norm, in.filter, qseeds, params},
         {{bq, k}, {bq, k}},
         {mx::int32, mx::float32},
         {bq * kernels::SEARCH_THREADS, 1, 1},
@@ -312,7 +325,9 @@ Neighbors search_single_cta(
          {"QCAP", qcap},
          {"QSHARED", qshared},
          {"HBITS", hbits},
-         {"TEAM", in.team}},
+         {"TEAM", in.team},
+         {"FILTER", in.filtered},
+         {"NSEEDS", in.num_seeds}},
         std::nullopt,
         false,
         {});
@@ -414,13 +429,71 @@ Neighbors graph_search(
     throw std::invalid_argument(
         "[mlxvs::graph_search] team_size must be 0, 4, 8, 16 or 32.");
   }
+  // the filter as bitset words
+  auto filter = mx::array({0xffffffffu});
+  bool filtered = options.filter.has_value();
+  float rate = options.filtering_rate;
+  if (filtered) {
+    const auto& f = *options.filter;
+    int words = (n + 31) / 32;
+    if (f.ndim() == 1 && f.dtype() == mx::bool_ && f.shape(0) == n) {
+      auto padded = mx::pad(mx::astype(f, mx::uint32), {{0, words * 32 - n}});
+      auto bits = mx::left_shift(mx::array(1u), mx::arange(32, mx::uint32));
+      filter = mx::sum(mx::multiply(mx::reshape(padded, {words, 32}), bits), 1);
+      filter = mx::astype(filter, mx::uint32);
+      if (rate < 0) {
+        rate = 1.0f - mx::mean(mx::astype(f, mx::float32)).item<float>();
+      }
+    } else if (
+        f.ndim() == 1 && f.shape(0) == words &&
+        (f.dtype() == mx::uint32 || f.dtype() == mx::int32)) {
+      filter = mx::view(f, mx::uint32);
+      if (rate < 0) {
+        // popcount of the words, the padding bits not counted
+        auto bits = mx::bitwise_and(
+            mx::right_shift(
+                mx::expand_dims(filter, 1), mx::arange(32, mx::uint32)),
+            mx::array(1u));
+        auto allowed = mx::sum(
+            mx::astype(mx::slice(mx::flatten(bits), {0}, {n}), mx::float32));
+        rate = 1.0f - allowed.item<float>() / n;
+      }
+    } else {
+      throw std::invalid_argument(
+          "[mlxvs::graph_search] filter must be bool [n] or a bitset uint32 "
+          "[ceil(n / 32)].");
+    }
+  }
+  if (multi && filtered && rate > 0 && rate < 1) {
+    // as cuVS's search plan: a longer list when the filter rejects rows
+    int adjusted = (int)((float)k / (1.0f - rate) +
+                         (float)(itopk - k) / std::sqrt(1.0f - rate));
+    adjusted = (adjusted + 31) / 32 * 32;
+    itopk = std::min(std::max(itopk, adjusted), 1024);
+  }
+  auto seeds = mx::array({-1});
+  int num_seeds = 0;
+  if (options.seeds.has_value()) {
+    const auto& sd = *options.seeds;
+    if (sd.ndim() != 2 || sd.shape(0) != nq ||
+        !mx::issubdtype(sd.dtype(), mx::integer)) {
+      throw std::invalid_argument(
+          "[mlxvs::graph_search] seeds must be integer ids [nq, num_seeds].");
+    }
+    num_seeds = sd.shape(1);
+    seeds = num_seeds > 0 ? mx::astype(sd, mx::int32) : seeds;
+  }
   Prepared in{
       base,
       graph,
       queries,
       inv_norm,
       metric_code,
-      team_for(base.shape(1), options.team_size)};
+      team_for(base.shape(1), options.team_size),
+      filter,
+      filtered,
+      seeds,
+      num_seeds};
   return multi ? search_multi_cta(in, k, itopk, options)
                : search_single_cta(in, k, itopk, options);
 }
