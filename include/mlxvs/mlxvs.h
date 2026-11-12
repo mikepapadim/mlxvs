@@ -245,8 +245,9 @@ struct CagraOptions {
  * it in Z's), ties by rank; then the second half of each list takes reverse
  * edges (Y -> X for kept X -> Y, by the edge's rank) not there yet, so that
  * nodes with few incoming edges stay reachable. Needs no distances. A node
- * receiving more than graph_degree reverse edges keeps the first that arrive,
- * so the result can vary slightly between runs. Requires K <= 256. Runs on the
+ * receiving more than graph_degree reverse edges keeps those of lowest rank, as
+ * cuVS; among edges of the rank where the cut falls, the first that arrive, so
+ * the result can vary slightly between runs. Requires K <= 256. Runs on the
  * GPU.
  */
 MLXVS_API mx::array cagra_optimize(
@@ -283,10 +284,17 @@ struct SearchOptions {
   /** Nodes expanded per round. search_width * graph degree <= 512. */
   int search_width = 1;
 
-  /** The most rounds; 0: 2 * itopk_size / search_width + 16. */
+  /**
+   * The most iterations, the random start counting as the first, as cuVS. 0:
+   * itopk_size / search_width plus log base max(2, degree / 2) of n, rounded
+   * up.
+   */
   int max_iterations = 0;
 
-  /** Rounds of random start nodes (each as many as one round's neighbors). */
+  /**
+   * The random start fills itopk_size + search_width * degree slots, each with
+   * the nearest of this many random nodes (cuVS's distillation).
+   */
   int num_random_samplings = 1;
 
   unsigned long long seed = 0x128394;
@@ -298,12 +306,12 @@ struct SearchOptions {
  * of every base row; -1 entries are skipped), as CAGRA's single-CTA search: one
  * threadgroup per query keeps a sorted list of itopk_size nodes, starts from
  * random nodes and repeatedly expands the best unexpanded ones until all are
- * expanded. Works on any fixed-degree graph: nn_descent's or all_neighbors's
- * k-NN graph, or a pruned one. Returns ids and distances as brute_force_knn.
- * base may be float16 (read as is: half the memory traffic) or any real dtype
- * (converted to float32 on every call). For Cosine, the base row norms are
- * computed on every call; normalized rows with InnerProduct avoid that. Runs on
- * the GPU.
+ * expanded or max_iterations is reached. Works on any fixed-degree graph:
+ * nn_descent's or all_neighbors's k-NN graph, or a pruned one. Returns ids and
+ * distances as brute_force_knn. base may be float16 (read as is: half the
+ * memory traffic) or any real dtype (converted to float32 on every call). For
+ * Cosine, the base row norms are computed on every call; normalized rows with
+ * InnerProduct avoid that. Runs on the GPU.
  */
 MLXVS_API Neighbors graph_search(
     const mx::array& base,

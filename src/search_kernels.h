@@ -38,6 +38,29 @@ inline uint mlxvs_mix(uint x) {
   x ^= x >> 16;
   return x;
 }
+// Score of base row id against the query (larger is closer), summed by one
+// SIMD group: every lane gets the total. metric: 0 inner product, 1 l2 (as
+// minus the squared distance), 2 cosine (inner product times the row's inverse
+// norm).
+template <typename T, typename Q, typename N>
+inline float mlxvs_score(
+    const device T* base,
+    Q qv,
+    N inv_norm,
+    int id,
+    int d,
+    int metric,
+    uint lane) {
+  size_t row = (size_t)id * (size_t)d;
+  float acc = 0.0f;
+  for (int j = (int)lane; j < d; j += 32) {
+    float a = qv[j];
+    float b = (float)base[row + j];
+    acc += metric == 1 ? -(a - b) * (a - b) : a * b;
+  }
+  acc = simd_sum(acc);
+  return metric == 2 ? acc * inv_norm[id] : acc;
+}
 // Inserts id into the visited set (open addressing, linear probing, empty
 // slots -1). True if it was not there.
 inline bool mlxvs_visit(threadgroup atomic_int* table, uint bits, int id) {
@@ -63,21 +86,23 @@ inline bool mlxvs_visit(threadgroup atomic_int* table, uint bits, int id) {
 )";
 
 // One threadgroup of 256 threads per query, as CAGRA's single-CTA search. The
-// query keeps a sorted list of M entries (itopk). After a random start, each
-// round expands the best unexpanded entries (up to W of them, marked in the
-// list), gathers their graph neighbors, drops the ones already visited (a hash
-// set in threadgroup memory, cleared and refilled with the list's nodes when
-// half full), scores the rest (one SIMD group per candidate), sorts them
-// (bitonic) and merges them into the list (each entry's rank by binary search
-// in the other list). It stops when every entry of the list has been expanded,
-// or after max_iter rounds.
+// query keeps a sorted list of M entries (itopk). The random start, as cuVS,
+// fills M + W * deg slots (in rounds of at most CP), each with the best of
+// n_rand random nodes. Then each round expands the best unexpanded entries (up
+// to W of them, marked in the list), gathers their graph neighbors, drops the
+// ones already visited (a hash set in threadgroup memory, cleared and refilled
+// with the list's nodes when half full), scores the rest (one SIMD group per
+// candidate), sorts them (bitonic) and merges them into the list (each entry's
+// rank by binary search in the other list). It stops when every entry of the
+// list has been expanded, or after max_iter rounds (cuVS's max_iterations - 1:
+// its first iteration is the random start's).
 //
 // template: M (list length, multiple of 32), CP (candidate slots, power of
 // two), QCAP (query floats in threadgroup memory, 1 when read from device),
 // QSHARED, HBITS (log2 of the visited-set slots)
 // inputs: base [n, d] float, graph [n, deg] int, queries [nq, d] float,
 // inv_norm [n] float (cosine only), params [n, d, deg, k, W, max_iter, metric,
-// seed, n_rand] int
+// seed, n_rand, rand_slots] int
 // outputs: out_ids [nq, k] int, out_scores [nq, k] float
 constexpr const char* SEARCH_SOURCE = R"(
   const uint THREADS = 256;
@@ -96,6 +121,8 @@ constexpr const char* SEARCH_SOURCE = R"(
   int metric = params[6];  // 0 inner product, 1 l2, 2 cosine
   uint seed = (uint)params[7];
   int n_rand = params[8];
+  int rand_slots = params[9];
+  int rand_rounds = (rand_slots + (int)CP - 1) / (int)CP;
   size_t qrow = (size_t)q * (size_t)d;
 
   threadgroup float qv[QCAP];
@@ -128,7 +155,7 @@ constexpr const char* SEARCH_SOURCE = R"(
 
   uint cur = 0;
   for (int it = 0;; ++it) {
-    bool random_round = it < n_rand;
+    bool random_round = it < rand_rounds;
     // the round's nodes: random ones, or the best unexpanded entries of the list
     if (!random_round && sg == 0) {
       uint found = 0;
@@ -145,12 +172,12 @@ constexpr const char* SEARCH_SOURCE = R"(
       }
       if (lane == 0) {
         found = min(found, (uint)width);
-        round_size = it - n_rand >= max_iter ? 0 : (int)found * deg;
+        round_size = it - rand_rounds >= max_iter ? 0 : (int)found * deg;
       }
     }
     if (lid == 0) {
       if (random_round) {
-        round_size = (int)CP;
+        round_size = min((int)CP, rand_slots - it * (int)CP);
       }
       uint fill = atomic_load_explicit(&filled, memory_order_relaxed);
       round_reset = fill + (uint)round_size > HSIZE / 2 ? 1 : 0;
@@ -179,47 +206,71 @@ constexpr const char* SEARCH_SOURCE = R"(
       threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    // candidates not visited before
-    for (uint c = lid; c < CP; c += THREADS) {
-      int id = -1;
-      if (c < (uint)size) {
-        int node;
-        if (random_round) {
-          uint h = mlxvs_mix(seed ^ mlxvs_mix(q * 0x9e3779b9u + (uint)it * 0x85ebca6bu + c));
-          node = (int)(h % (uint)n);
-        } else {
+    if (random_round) {
+      // each slot: the best of n_rand random nodes, one SIMD group per slot
+      for (uint c = sg; c < CP; c += SIMDS) {
+        float best = -INFINITY;
+        int best_id = -1;
+        if (c < (uint)size) {
+          uint slot = (uint)it * CP + c;
+          for (int j = 0; j < n_rand; ++j) {
+            uint g = slot + (uint)rand_slots * (uint)j;
+            uint h = mlxvs_mix(seed ^ mlxvs_mix(q * 0x9e3779b9u + g * 0x85ebca6bu));
+            int node = (int)(h % (uint)n);
+            float sc = QSHARED
+                ? mlxvs_score(base, (threadgroup const float*)qv, inv_norm, node, d, metric, lane)
+                : mlxvs_score(base, queries + qrow, inv_norm, node, d, metric, lane);
+            if (mlxvs_before(sc, node, best, best_id)) {
+              best = sc;
+              best_id = node;
+            }
+          }
+        }
+        bool fresh = false;
+        if (lane == 0 && best_id >= 0) {
+          fresh = mlxvs_visit(visited, HBITS, best_id);
+          if (fresh) {
+            atomic_fetch_add_explicit(&filled, 1u, memory_order_relaxed);
+          }
+        }
+        if (lane == 0) {
+          cand_i[c] = fresh ? best_id : -1;
+          cand_s[c] = fresh ? best : -INFINITY;
+        }
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    } else {
+      // candidates not visited before
+      for (uint c = lid; c < CP; c += THREADS) {
+        int id = -1;
+        if (c < (uint)size) {
           int p = parents[c / (uint)deg];
-          node = graph[(size_t)p * (size_t)deg + c % (uint)deg];
+          int node = graph[(size_t)p * (size_t)deg + c % (uint)deg];
+          if (node >= 0 && node < n && mlxvs_visit(visited, HBITS, node)) {
+            atomic_fetch_add_explicit(&filled, 1u, memory_order_relaxed);
+            id = node;
+          }
         }
-        if (node >= 0 && node < n && mlxvs_visit(visited, HBITS, node)) {
-          atomic_fetch_add_explicit(&filled, 1u, memory_order_relaxed);
-          id = node;
-        }
+        cand_i[c] = id;
+        cand_s[c] = -INFINITY;
       }
-      cand_i[c] = id;
-      cand_s[c] = -INFINITY;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // scores, one SIMD group per candidate; larger is closer
-    for (uint c = sg; c < CP; c += SIMDS) {
-      int id = cand_i[c];
-      if (id < 0) {
-        continue;
+      // scores, one SIMD group per candidate; larger is closer
+      for (uint c = sg; c < CP; c += SIMDS) {
+        int id = cand_i[c];
+        if (id < 0) {
+          continue;
+        }
+        float sc = QSHARED
+            ? mlxvs_score(base, (threadgroup const float*)qv, inv_norm, id, d, metric, lane)
+            : mlxvs_score(base, queries + qrow, inv_norm, id, d, metric, lane);
+        if (lane == 0) {
+          cand_s[c] = sc;
+        }
       }
-      size_t row = (size_t)id * (size_t)d;
-      float acc = 0.0f;
-      for (int j = (int)lane; j < d; j += 32) {
-        float a = QSHARED ? qv[j] : queries[qrow + j];
-        float b = base[row + j];
-        acc += metric == 1 ? -(a - b) * (a - b) : a * b;
-      }
-      acc = simd_sum(acc);
-      if (lane == 0) {
-        cand_s[c] = metric == 2 ? acc * inv_norm[id] : acc;
-      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // bitonic sort of the candidates, best first
     for (uint span = 2; span <= CP; span <<= 1) {

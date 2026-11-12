@@ -14,13 +14,15 @@
 
 #include "common.h"
 
-// The CPU reference; in_degree receives each node's number of reverse edges
+// The CPU reference. tied[x] is set where x has more than d reverse edges and
+// the cut falls among edges of one rank: which of those the GPU keeps depends
+// on the order they arrive in, as in cuVS.
 static std::vector<int> reference_optimize(
     const std::vector<int>& knn,
     int n,
     int k,
     int d,
-    std::vector<int>& in_degree) {
+    std::vector<char>& tied) {
   std::vector<int> pruned((size_t)n * d, -1);
   for (int x = 0; x < n; ++x) {
     const int* nx = &knn[(size_t)x * k];
@@ -42,11 +44,11 @@ static std::vector<int> reference_optimize(
   for (int x = 0; x < n; ++x)
     for (int r = 0; r < d; ++r)
       rev[pruned[(size_t)x * d + r]].push_back({r, x});
-  in_degree.assign(n, 0);
+  tied.assign(n, 0);
   std::vector<int> out((size_t)n * d, -1);
   for (int x = 0; x < n; ++x) {
-    in_degree[x] = (int)rev[x].size();
     std::sort(rev[x].begin(), rev[x].end());
+    tied[x] = (int)rev[x].size() > d && rev[x][d - 1].first == rev[x][d].first;
     std::vector<int> list;
     auto add = [&](int v) {
       if ((int)list.size() < d &&
@@ -90,8 +92,8 @@ static void reference_case(int n, int dim, int k, int d) {
   auto got = mlxvs::cagra_optimize(knn, d);
   mx::eval(knn, got);
   std::vector<int> kv(knn.data<int>(), knn.data<int>() + (size_t)n * k);
-  std::vector<int> in_degree;
-  auto want = reference_optimize(kv, n, k, d, in_degree);
+  std::vector<char> tied;
+  auto want = reference_optimize(kv, n, k, d, tied);
   const int* g = got.data<int>();
   long same = 0, compared = 0;
   bool valid = true;
@@ -101,9 +103,9 @@ static void reference_case(int n, int dim, int k, int d) {
       int v = g[(size_t)i * d + t];
       valid &= v >= 0 && v < n && v != i && seen.insert(v).second;
     }
-    // reverse lists over capacity keep the first edges to arrive: compare
-    // the protected half there, everything elsewhere
-    int upto = in_degree[i] <= d ? d : d / 2;
+    // reverse lists over capacity keep the edges of lowest rank; where the
+    // cut falls among edges of one rank, compare the protected half only
+    int upto = tied[i] ? d / 2 : d;
     for (int t = 0; t < upto; ++t) {
       same += g[(size_t)i * d + t] == want[(size_t)i * d + t];
       ++compared;

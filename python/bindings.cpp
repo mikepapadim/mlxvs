@@ -267,8 +267,10 @@ NB_MODULE(_core, m) {
               multiple of 32, at most 256). Longer: higher recall, slower.
             search_width (int): Nodes expanded per round;
               ``search_width * degree <= 512``.
-            max_iterations (int): The most rounds; 0: automatic.
-            num_random_samplings (int): Rounds of random start nodes.
+            max_iterations (int): The most iterations, the random start
+              counting as the first; 0: automatic, as cuVS.
+            num_random_samplings (int): Each random start slot takes the
+              nearest of this many random nodes.
             seed (int): Seed of the random start nodes.
             stream (Stream, optional): Stream or device. GPU only.
 

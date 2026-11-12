@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 (2026-11-12)
+
+Closer to CAGRA (Ootomo et al., arXiv:2308.15136) as cuVS implements it:
+
+- `cagra_optimize`: a node with more reverse edges than `graph_degree` keeps those of lowest rank (the rank of
+  the edge in its source's pruned list), as cuVS, which adds them one rank at a time; it kept the first to arrive.
+  The GPU graph now equals the CPU reference wherever the cut does not fall among edges of one rank.
+- `graph_search`: the random start fills `itopk_size + search_width * degree` slots, each the nearest of
+  `num_random_samplings` random nodes (cuVS's distillation), instead of `num_random_samplings` rounds of one
+  round's candidates. SIFT1M, degree 32: recall@10 0.935, 0.981, 0.995, 0.999 at itopk 32, 64, 128, 256 (was
+  0.931, 0.976, 0.993, 0.998), about 5% fewer queries per second at the same itopk.
+- `graph_search`: `max_iterations = 0` is cuVS's automatic value (`itopk_size / search_width` plus the hops to
+  reach n nodes at `degree / 2` new nodes per hop), the random start counting as the first iteration.
+
 ## 0.2.0 (2026-11-11)
 
 - `CagraIndex`: a dataset and its CAGRA graph stored once for search (`build`, `search`, `save` and `load` as one

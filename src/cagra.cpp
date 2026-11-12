@@ -25,12 +25,33 @@ const mx::fast::CustomKernelFunction& prune_kernel() {
   return kernel;
 }
 
-const mx::fast::CustomKernelFunction& reverse_kernel() {
+const mx::fast::CustomKernelFunction& rev_count_kernel() {
   static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
-      "mlxvs_cagra_reverse",
+      "mlxvs_cagra_rev_count",
       {"pruned", "params"},
-      {"rev"},
-      kernels::REVERSE_SOURCE,
+      {"hist"},
+      kernels::REV_COUNT_SOURCE,
+      "",
+      /*ensure_row_contiguous=*/true,
+      /*atomic_outputs=*/true);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& rev_offset_kernel() {
+  static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
+      "mlxvs_cagra_rev_offset",
+      {"hist", "params"},
+      {"offset"},
+      kernels::REV_OFFSET_SOURCE);
+  return kernel;
+}
+
+const mx::fast::CustomKernelFunction& rev_fill_kernel() {
+  static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
+      "mlxvs_cagra_rev_fill",
+      {"pruned", "offset", "params"},
+      {"placed", "rev"},
+      kernels::REV_FILL_SOURCE,
       "",
       /*ensure_row_contiguous=*/true,
       /*atomic_outputs=*/true);
@@ -40,7 +61,7 @@ const mx::fast::CustomKernelFunction& reverse_kernel() {
 const mx::fast::CustomKernelFunction& merge_kernel() {
   static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
       "mlxvs_cagra_merge",
-      {"pruned", "rev", "params"},
+      {"pruned", "rev", "offset", "params"},
       {"graph"},
       kernels::MERGE_SOURCE);
   return kernel;
@@ -102,19 +123,40 @@ mx::array cagra_optimize(
       {})[0];
 
   auto params = mx::array({n}, {1}, mx::int32);
-  auto rev = reverse_kernel()(
+  // reverse edges of lowest rank first, as cuVS adds them one rank at a time
+  auto hist = rev_count_kernel()(
       {pruned, params},
-      {{n, 1 + 2 * rcap}},
+      {{n, d}},
       {mx::int32},
+      {n * d, 1, 1},
+      {256, 1, 1},
+      {{"D", d}},
+      0,
+      false,
+      {})[0];
+  auto offset = rev_offset_kernel()(
+      {hist, params},
+      {{n, d + 1}},
+      {mx::int32},
+      {n, 1, 1},
+      {256, 1, 1},
+      {{"D", d}},
+      std::nullopt,
+      false,
+      {})[0];
+  auto rev = rev_fill_kernel()(
+      {pruned, offset, params},
+      {{n, d}, {n, 2 * rcap}},
+      {mx::int32, mx::int32},
       {n * d, 1, 1},
       {256, 1, 1},
       {{"D", d}, {"RCAP", rcap}},
       0,
       false,
-      {})[0];
+      {})[1];
 
   return merge_kernel()(
-      {pruned, rev, params},
+      {pruned, rev, offset, params},
       {{n, d}},
       {mx::int32},
       {n, 1, 1},

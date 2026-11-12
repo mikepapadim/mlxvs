@@ -30,7 +30,7 @@ __all__ = [
     "kmeans_predict",
     "nn_descent",
 ]
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 def __getattr__(name):

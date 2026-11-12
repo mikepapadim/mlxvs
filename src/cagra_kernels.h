@@ -133,13 +133,18 @@ constexpr const char* PRUNE_SOURCE = R"(
   }
 )";
 
-// Reverse edges: one thread per edge X -> Y = pruned[X][r] appends (r, X) to
-// Y's reverse list (the first RCAP that arrive; counted in column 0).
+// Reverse edges, as cuVS (which adds them one rank at a time): each node Y
+// keeps the RCAP reverse edges Y -> X (for kept X -> Y = pruned[X][r]) of
+// lowest rank r. Three passes: count each node's incoming edges by rank, a
+// prefix sum per node, then each edge's slot is its rank's offset plus its
+// place among the edges of that rank (in order of arrival; ties at the last
+// rank kept are decided by arrival).
 //
-// template: D (pruned degree), RCAP
+// REV_COUNT_SOURCE, one thread per edge.
+// template: D (pruned degree)
 // inputs: pruned [n, D] int, params [n] int
-// outputs: rev [n, 1 + 2 * RCAP] atomic int (0 filled)
-constexpr const char* REVERSE_SOURCE = R"(
+// outputs: hist [n, D] atomic int (0 filled): incoming edges by rank
+constexpr const char* REV_COUNT_SOURCE = R"(
   uint e = thread_position_in_grid.x;
   int n = params[0];
   if (e >= (uint)n * D) {
@@ -151,20 +156,66 @@ constexpr const char* REVERSE_SOURCE = R"(
   if (y < 0 || y >= n || y == x) {
     return;
   }
-  size_t row = (size_t)y * (1 + 2 * RCAP);
-  int slot = atomic_fetch_add_explicit(&rev[row], 1, memory_order_relaxed);
+  atomic_fetch_add_explicit(&hist[(size_t)y * D + r], 1, memory_order_relaxed);
+)";
+
+// REV_OFFSET_SOURCE, one thread per node.
+// template: D
+// inputs: hist [n, D] int, params [n] int
+// outputs: offset [n, D + 1] int: incoming edges of lower rank; the last
+// column is the node's in-degree
+constexpr const char* REV_OFFSET_SOURCE = R"(
+  uint y = thread_position_in_grid.x;
+  int n = params[0];
+  if (y >= (uint)n) {
+    return;
+  }
+  int sum = 0;
+  for (int r = 0; r < D; ++r) {
+    offset[(size_t)y * (D + 1) + r] = sum;
+    sum += hist[(size_t)y * D + r];
+  }
+  offset[(size_t)y * (D + 1) + D] = sum;
+)";
+
+// REV_FILL_SOURCE, one thread per edge: writes (r, X) at Y's slot offset[Y][r]
+// + its place among rank r's edges, if below RCAP.
+// template: D, RCAP
+// inputs: pruned [n, D] int, offset [n, D + 1] int, params [n] int
+// outputs: placed [n, D] atomic int (0 filled), rev [n, 2 * RCAP] atomic int
+constexpr const char* REV_FILL_SOURCE = R"(
+  uint e = thread_position_in_grid.x;
+  int n = params[0];
+  if (e >= (uint)n * D) {
+    return;
+  }
+  int x = (int)(e / D);
+  int r = (int)(e % D);
+  int y = pruned[e];
+  if (y < 0 || y >= n || y == x) {
+    return;
+  }
+  int base = offset[(size_t)y * (D + 1) + r];
+  if (base >= RCAP) {
+    return;
+  }
+  int slot = base +
+      atomic_fetch_add_explicit(&placed[(size_t)y * D + r], 1, memory_order_relaxed);
   if (slot < RCAP) {
-    atomic_store_explicit(&rev[row + 1 + 2 * slot], r, memory_order_relaxed);
-    atomic_store_explicit(&rev[row + 2 + 2 * slot], x, memory_order_relaxed);
+    size_t at = (size_t)y * (2 * RCAP) + 2 * slot;
+    atomic_store_explicit(&rev[at], r, memory_order_relaxed);
+    atomic_store_explicit(&rev[at + 1], x, memory_order_relaxed);
   }
 )";
 
-// Merge, one thread per node: the first D/2 forward edges are kept, then the
-// reverse edges (by rank of the edge in its source's list, then source id)
-// that are not there yet, then the remaining forward edges, up to D.
+// Merge, one thread per node, as cuVS: the first D/2 forward edges are kept,
+// then the reverse edges (by rank of the edge in its source's list, then
+// source id) that are not there yet, then the remaining forward edges, up to
+// D.
 //
 // template: D, RCAP
-// inputs: pruned [n, D] int, rev [n, 1 + 2 * RCAP] int, params [n] int
+// inputs: pruned [n, D] int, rev [n, 2 * RCAP] int, offset [n, D + 1] int,
+// params [n] int
 // outputs: graph [n, D] int (-1 filled)
 constexpr const char* MERGE_SOURCE = R"(
   uint x = thread_position_in_grid.x;
@@ -173,7 +224,7 @@ constexpr const char* MERGE_SOURCE = R"(
     return;
   }
   size_t frow = (size_t)x * D;
-  size_t rrow = (size_t)x * (1 + 2 * RCAP);
+  size_t rrow = (size_t)x * (2 * RCAP);
   int out[D];
   int count = 0;
   const int protect = D / 2;
@@ -184,15 +235,15 @@ constexpr const char* MERGE_SOURCE = R"(
     }
   }
   // reverse edges in (rank, source) order: selection of the next smallest
-  int nrev = min(rev[rrow], RCAP);
+  int nrev = min(offset[(size_t)x * (D + 1) + D], RCAP);
   int last_r = -1;
   int last_x = -1;
   for (int taken = 0; taken < nrev && count < D; ++taken) {
     int best_r = 0x7fffffff;
     int best_x = 0x7fffffff;
     for (int s = 0; s < nrev; ++s) {
-      int r = rev[rrow + 1 + 2 * s];
-      int v = rev[rrow + 2 + 2 * s];
+      int r = rev[rrow + 2 * s];
+      int v = rev[rrow + 2 * s + 1];
       bool after_last = r > last_r || (r == last_r && v > last_x);
       bool better = r < best_r || (r == best_r && v < best_x);
       if (after_last && better) {

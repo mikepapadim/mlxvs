@@ -86,17 +86,31 @@ Neighbors graph_search(
         "search_width * graph degree at most " +
         std::to_string(kernels::SEARCH_CANDIDATES_MAX) + ".");
   }
-  int m = std::max(options.itopk_size, k);
-  m = (m + 31) / 32 * 32;
+  int itopk = std::max(options.itopk_size, k);
+  int m = (itopk + 31) / 32 * 32;
   if (k < 1 || m > kernels::SEARCH_ITOPK_MAX) {
     throw std::invalid_argument(
         "[mlxvs::graph_search] k and itopk_size must be in [1, " +
         std::to_string(kernels::SEARCH_ITOPK_MAX) + "].");
   }
   int cp = pow2_at_least(width * deg);
-  int max_iter =
-      options.max_iterations > 0 ? options.max_iterations : 2 * m / width + 16;
+  // max_iterations as cuVS's search plan: itopk_size / search_width, plus one
+  // per hop needed to reach n nodes at degree / 2 new nodes per hop. Its first
+  // iteration is the random start, so the kernel's rounds of expansion are
+  // one fewer.
+  int iterations = options.max_iterations;
+  if (iterations <= 0) {
+    iterations = itopk / width;
+    long long reach = 1;
+    while (reach < n) {
+      reach *= std::max(2, deg / 2);
+      ++iterations;
+    }
+  }
+  int max_iter = std::max(1, iterations - 1);
   int n_rand = std::max(1, options.num_random_samplings);
+  // the random start fills the list and one round's candidates, as cuVS
+  int rand_slots = m + width * deg;
   // threadgroup memory: the list (two halves), the candidates, the query and
   // the visited set. Kept within 16 KB where it can be: Metal's limit is 32 KB,
   // but its shader validation (as run in CI) counts every byte twice. The
@@ -149,8 +163,9 @@ Neighbors graph_search(
          max_iter,
          metric_code,
          (int)(options.seed & 0x7fffffffULL) ^ q0,
-         n_rand},
-        {9},
+         n_rand,
+         rand_slots},
+        {10},
         mx::int32);
     auto out = search_kernel()(
         {base, graph, qs, inv_norm, params},

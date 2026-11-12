@@ -36,18 +36,23 @@ How the operations map onto MLX and Metal. For the API see the [README](../READM
   farther clusters, which separates those rows from their neighbors.
 - `graph_search`: CAGRA's single-CTA search, one threadgroup of 256 threads per query. Its state lives in threadgroup
   memory: a sorted list of `itopk_size` entries (two halves, merged from one into the other), one round's candidates,
-  the query when `d <= 1024`, and a visited set (open addressing over atomic ints). After a random start, each round
+  the query when `d <= 1024`, and a visited set (open addressing over atomic ints). The random start, as cuVS, fills
+  `itopk_size + search_width * degree` slots, each with the nearest of `num_random_samplings` random nodes (one
+  SIMD group per slot, in rounds of one round's candidate slots). Then each round
   marks the best unexpanded list entries as expanded (an id stored as `-(id + 2)`), gathers their graph neighbors,
   keeps the ones it inserts into the visited set (so no node is scored twice in a round, nor one in the list), scores
   them one SIMD group per candidate, sorts them (bitonic) and merges them into the list: each entry's place is its
   index plus the number of entries of the other list before it, found by binary search. When the visited set is half
   full it is cleared and refilled with the list's nodes, as CAGRA's small-hash mode. The search ends when every list
-  entry is expanded. Everything stays within 16 KB of threadgroup memory where it can: Metal allows 32 KB, but its
+  entry is expanded, or after cuVS's `max_iterations`. Everything stays within 16 KB of threadgroup memory where it can: Metal allows 32 KB, but its
   shader validation (run in CI) keeps a shadow copy and counts every byte twice.
-- `cagra_optimize`: three kernels. Prune: one threadgroup per node X loads N(X) into a threadgroup id -> rank table,
+- `cagra_optimize`: five kernels. Prune: one threadgroup per node X loads N(X) into a threadgroup id -> rank table,
   then for every pair (i, r) reads Y = N(N(X)[i])[r] and, if Y is in N(X) at rank j > max(i, r), counts a detour
   of the edge X -> Y; each edge's place in the output is the number of edges with fewer detours (or as many and a
-  lower rank). Reverse: one thread per kept edge X -> Y appends (rank, X) to Y's list with an atomic counter (up to
-  `graph_degree` per node; a custom kernel's outputs are fresh arrays, so this is one launch over all edges). Merge:
+  lower rank). Reverse: each node keeps the `graph_degree` incoming edges of lowest rank, as cuVS (which launches one
+  kernel per rank). A custom kernel's outputs are fresh arrays, so instead of one launch per rank: one thread per
+  kept edge X -> Y counts Y's incoming edges by rank, one thread per node turns the counts into offsets, and one
+  thread per edge writes (rank, X) at its rank's offset plus its place among that rank's edges (an atomic counter),
+  if below `graph_degree`. Merge:
   one thread per node keeps the first half of its pruned list, adds its reverse edges in (rank, source) order that
   are not there yet, then the rest of the pruned list.

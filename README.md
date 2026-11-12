@@ -211,8 +211,8 @@ and for one query at a time at low load, `save_hnswlib` and serve from the CPU.
 | `cagra_optimize(knn_graph, graph_degree)` | `cagra::optimize` | rank-based pruning and reverse edges, as cuVS; the reverse half fills from the lowest-rank edges |
 | `graph_search(base, graph, queries, k, ...)` | `cagra::search` | takes the dataset and graph directly, no index object yet |
 | `itopk_size` = 64, `search_width` = 1 | `search_params::{itopk_size, search_width}` | same defaults; `itopk_size` at most 256 |
-| `max_iterations` = 0 (automatic) | `search_params::max_iterations` | stops earlier once every list entry is expanded |
-| `num_random_samplings` = 1 | `search_params::num_random_samplings` | random start nodes; no seed nodes yet |
+| `max_iterations` = 0 (automatic) | `search_params::max_iterations` | same automatic value; stops earlier once every list entry is expanded |
+| `num_random_samplings` = 1 | `search_params::num_random_samplings` | same: itopk + width * degree start slots, each the nearest of this many random nodes; no seed nodes yet |
 | `int32` ids | `int64_t` ids | n < 2^31 rows |
 
 ## Roadmap
