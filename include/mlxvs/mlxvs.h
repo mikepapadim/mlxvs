@@ -6,6 +6,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -429,6 +430,31 @@ MLXVS_API Neighbors graph_search(
     Metric metric,
     const SearchOptions& options = {},
     mx::StreamOrDevice s = {});
+
+/**
+ * Writes a search index (the rows [n, d], any real dtype, and its graph [n,
+ * degree] of ids, -1 skipped) in hnswlib's binary format, as cuVS's
+ * serialize_to_hnswlib: the graph is hnswlib's bottom layer (no upper layers),
+ * entered at the medoid; M is half the degree; rows are written as float32;
+ * labels are row ids. metric picks the medoid (hnswlib's space is chosen when
+ * loading).
+ */
+MLXVS_API void save_hnswlib(
+    const std::string& path,
+    const mx::array& dataset,
+    const mx::array& graph,
+    Metric metric);
+
+/**
+ * Writes a search index in JVector's on-disk format (OnDiskGraphIndex, format
+ * version 6 as JVector 4 writes it): one layer entered at the medoid, the rows
+ * as INLINE_VECTORS (float32), the header repeated in the footer.
+ */
+MLXVS_API void save_jvector(
+    const std::string& path,
+    const mx::array& dataset,
+    const mx::array& graph,
+    Metric metric);
 
 /**
  * One merge step of brute_force_knn, exposed for tests and benchmarks: the best

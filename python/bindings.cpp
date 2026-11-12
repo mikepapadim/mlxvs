@@ -4,6 +4,7 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
+#include <nanobind/stl/string.h>
 #include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
 
@@ -231,6 +232,44 @@ NB_MODULE(_core, m) {
 
         Returns:
             array: ``int32 [n, graph_degree]``, most similar first, -1 filled.
+      )");
+
+  m.def(
+      "save_hnswlib",
+      [](const std::string& path,
+         const mx::array& dataset,
+         const mx::array& graph,
+         mlxvs::Metric metric) {
+        mlxvs::save_hnswlib(path, dataset, graph, metric);
+      },
+      "path"_a,
+      "dataset"_a,
+      "graph"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      R"(
+        Writes rows and their search graph in hnswlib's binary format, as
+        cuVS's ``serialize_to_hnswlib`` (``CagraIndex.save_hnswlib`` calls
+        it): the graph as hnswlib's bottom layer entered at the medoid,
+        ``M`` half the degree, float32 rows, row ids as labels.
+      )");
+
+  m.def(
+      "save_jvector",
+      [](const std::string& path,
+         const mx::array& dataset,
+         const mx::array& graph,
+         mlxvs::Metric metric) {
+        mlxvs::save_jvector(path, dataset, graph, metric);
+      },
+      "path"_a,
+      "dataset"_a,
+      "graph"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      R"(
+        Writes rows and their search graph in JVector's on-disk format
+        (``OnDiskGraphIndex``, format 6 as JVector 4 writes it; called by
+        ``CagraIndex.save_jvector``): one layer entered at the medoid, the
+        rows as inline float32 vectors.
       )");
 
   m.def(

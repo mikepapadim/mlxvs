@@ -112,6 +112,23 @@ static void index_case(mlxvs_metric metric, int graph, const char* name) {
       "search loaded");
   check(memcmp(ids, ids2, sizeof(int32_t) * nq * k) == 0, "loaded ids equal");
   remove(path);
+  check(
+      mlxvs_index_save_hnswlib(index, "/tmp/mlxvs_test_c_api.hnsw") == MLXVS_OK,
+      "save hnswlib");
+  check(
+      mlxvs_index_save_jvector(index, "/tmp/mlxvs_test_c_api.jvector") ==
+          MLXVS_OK,
+      "save jvector");
+  FILE* jv = fopen("/tmp/mlxvs_test_c_api.jvector", "rb");
+  unsigned char magic[4] = {0};
+  check(
+      jv != NULL && fread(magic, 1, 4, jv) == 4 && magic[0] == 0xFF &&
+          magic[1] == 0xFF && magic[2] == 0x0D && magic[3] == 0x61,
+      "jvector magic");
+  if (jv)
+    fclose(jv);
+  remove("/tmp/mlxvs_test_c_api.hnsw");
+  remove("/tmp/mlxvs_test_c_api.jvector");
 
   /* an index from the same graph, copied out */
   int32_t* graph_ids = malloc(sizeof(int32_t) * n * 16);

@@ -144,6 +144,7 @@ mlxvs_index index;
 mlxvs_index_build(rows, n, d, MLXVS_COSINE, NULL, &index);     /* NULL: default parameters */
 mlxvs_index_search(index, queries, nq, 10, NULL, ids, distances);
 mlxvs_index_save(index, "index.safetensors");
+mlxvs_index_save_jvector(index, "index.jvector");   /* or _save_hnswlib: serve from JVector or hnswlib */
 mlxvs_index_free(index);                       /* errors: nonzero status, mlxvs_last_error() */
 ```
 
@@ -254,7 +255,6 @@ from `bench_search.py`'s output.
 ## Roadmap
 
 1. Per-query filters (cuVS's bitmap); byte datasets in the C API.
-2. `save_hnswlib` and `save_jvector` in the C API.
 
 Tried and left out: Vamana graphs from search-path candidates, as DiskANN builds them (each row searched over the
 CAGRA graph, its path and result list pruned with JVector's rule). On SIFT1M at degree 32 they stay below CAGRA's

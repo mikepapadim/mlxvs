@@ -20,7 +20,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * mlxvs from Java through the Foreign Function and Memory API (Java 22+), no JNI: builds a GPU index
- * of random rows, searches it, saves and loads it.
+ * of random rows, searches it, saves and loads it, and writes it in JVector's format.
  *
  * <pre>
  * cmake -S . -B build && cmake --build build      # builds build/libmlxvs_c.dylib
@@ -32,7 +32,8 @@ public class MlxvsExample {
 
   /** The C API's functions, bound once. */
   static final class Mlxvs {
-    final MethodHandle build, search, save, load, free, lastError, version, searchParamsInit;
+    final MethodHandle build, search, save, saveJVector, load, free, lastError, version,
+        searchParamsInit;
     final StructLayout searchParams =
         MemoryLayout.structLayout(
             JAVA_INT.withName("itopk_size"),
@@ -57,6 +58,8 @@ public class MlxvsExample {
       search = bind.apply("mlxvs_index_search",
           FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
       save = bind.apply("mlxvs_index_save", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+      saveJVector =
+          bind.apply("mlxvs_index_save_jvector", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
       load = bind.apply("mlxvs_index_load", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
       free = bind.apply("mlxvs_index_free", FunctionDescriptor.ofVoid(ADDRESS));
       lastError = bind.apply("mlxvs_last_error", FunctionDescriptor.of(ADDRESS));
@@ -115,6 +118,11 @@ public class MlxvsExample {
       index = indexOut.get(ADDRESS, 0);
       mlxvs.ok((int) mlxvs.search.invokeExact(index, querySeg, 1L, k, MemorySegment.NULL, ids, dist));
       System.out.println("loaded; query 0's nearest: " + ids.getAtIndex(JAVA_INT, 0));
+
+      // the same index for JVector (examples/jvector searches it)
+      var jvector = arena.allocateFrom("/tmp/mlxvs_java.jvector");
+      mlxvs.ok((int) mlxvs.saveJVector.invokeExact(index, jvector));
+      System.out.println("wrote /tmp/mlxvs_java.jvector for JVector");
       mlxvs.free.invokeExact(index);
     }
   }

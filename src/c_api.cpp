@@ -300,6 +300,30 @@ int mlxvs_index_save(mlxvs_index index, const char* path) {
       MLXVS_ERROR_IO);
 }
 
+int mlxvs_index_save_hnswlib(mlxvs_index index, const char* path) {
+  return guarded(
+      [&] {
+        require(
+            index != nullptr && path != nullptr,
+            "index and path must not be NULL.");
+        mlxvs::save_hnswlib(
+            path, index->dataset, index->graph, to_metric(index->metric));
+      },
+      MLXVS_ERROR_IO);
+}
+
+int mlxvs_index_save_jvector(mlxvs_index index, const char* path) {
+  return guarded(
+      [&] {
+        require(
+            index != nullptr && path != nullptr,
+            "index and path must not be NULL.");
+        mlxvs::save_jvector(
+            path, index->dataset, index->graph, to_metric(index->metric));
+      },
+      MLXVS_ERROR_IO);
+}
+
 int mlxvs_index_load(const char* path, mlxvs_index* out) {
   return guarded(
       [&] {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 (2026-11-12)
+
+- `save_hnswlib` and `save_jvector` in C++ (`include/mlxvs/mlxvs.h`) and the C API (`mlxvs_index_save_hnswlib`,
+  `mlxvs_index_save_jvector`); `CagraIndex.save_hnswlib` and `save_jvector` call them and write the same bytes as
+  before. From Java: build on the GPU through the C API and write a file JVector 4 searches
+  (`examples/java_ffm`, then `examples/jvector`).
+
 ## 0.7.0 (2026-11-12)
 
 - Byte datasets, as cuVS's int8 and uint8 datasets: `graph_search` reads `int8` and `uint8` rows as they are

@@ -178,6 +178,18 @@ MLXVS_C_API int mlxvs_index_search_seeded(
 /** Saves the index as .safetensors (as Python's CagraIndex.save). */
 MLXVS_C_API int mlxvs_index_save(mlxvs_index index, const char* path);
 
+/**
+ * Writes the index in hnswlib's binary format (as CagraIndex.save_hnswlib):
+ * serve it with hnswlib on any CPU; labels are row ids.
+ */
+MLXVS_C_API int mlxvs_index_save_hnswlib(mlxvs_index index, const char* path);
+
+/**
+ * Writes the index in JVector's on-disk format (OnDiskGraphIndex, JVector 4;
+ * as CagraIndex.save_jvector): search it from Java with JVector.
+ */
+MLXVS_C_API int mlxvs_index_save_jvector(mlxvs_index index, const char* path);
+
 /** Loads an index saved by mlxvs_index_save or CagraIndex.save. */
 MLXVS_C_API int mlxvs_index_load(const char* path, mlxvs_index* out);
 

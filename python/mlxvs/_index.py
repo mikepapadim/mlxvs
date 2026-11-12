@@ -186,66 +186,9 @@ class CagraIndex:
         Labels are row ids. hnswlib's distances are its own: squared L2, or
         1 - similarity for ``"cosine"`` and ``"ip"``.
         """
-        import struct
-
-        import numpy as np
-
-        data = np.asarray(self._dataset.astype(mx.float32))
-        graph = np.asarray(self._graph)
-        n, d = data.shape
-        degree = graph.shape[1]
-        m = (degree + 1) // 2
-        max_m0 = 2 * m
-        entry = self._medoid()
-
-        # each element: link count (uint32), max_m0 links (uint32), the row,
-        # the label (uint64); hnswlib reads the count's low 16 bits, and a zero
-        # third byte means "not deleted"
-        record = np.dtype(
-            [
-                ("count", "<u4"),
-                ("links", "<u4", (max_m0,)),
-                ("row", "<f4", (d,)),
-                ("label", "<u8"),
-            ]
+        mlxvs._core.save_hnswlib(
+            str(path), self._dataset, self._graph, self._metric_enum
         )
-        elements = np.zeros(n, dtype=record)
-        valid = graph >= 0
-        elements["count"] = valid.sum(axis=1)
-        links = np.zeros((n, max_m0), dtype=np.uint32)
-        # valid ids first in each row (cagra_optimize writes them first)
-        order = np.argsort(~valid, axis=1, kind="stable")
-        links[:, :degree] = np.where(
-            np.take_along_axis(valid, order, 1),
-            np.take_along_axis(graph, order, 1),
-            0,
-        )
-        elements["links"] = links
-        elements["row"] = data
-        elements["label"] = np.arange(n, dtype=np.uint64)
-
-        size_links0 = 4 + 4 * max_m0
-        header = struct.pack(
-            "<QQQQQQiIQQQdQ",
-            0,  # offsetLevel0
-            n,  # max_elements
-            n,  # cur_element_count
-            record.itemsize,  # size_data_per_element
-            size_links0 + 4 * d,  # label_offset
-            size_links0,  # offsetData
-            0,  # maxlevel
-            entry,  # enterpoint_node
-            m,  # maxM
-            max_m0,  # maxM0
-            m,  # M
-            1.0 / np.log(m) if m > 1 else 1.0,  # mult
-            200,  # ef_construction (unused by search)
-        )
-        with open(path, "wb") as f:
-            f.write(header)
-            f.write(elements.tobytes())
-            # no element has upper layers: every link-list size is 0
-            f.write(np.zeros(n, dtype=np.uint32).tobytes())
 
     def save_jvector(self, path):
         """Saves the index in JVector's on-disk format, for search from Java.
@@ -261,63 +204,13 @@ class CagraIndex:
         ``VectorSimilarityFunction.EUCLIDEAN`` (``"l2"``), ``COSINE`` or
         ``DOT_PRODUCT``. Node ordinals are row ids.
         """
-        import numpy as np
-
-        data = np.asarray(self._dataset.astype(mx.float32))
-        graph = np.asarray(self._graph)
-        n, d = data.shape
-        degree = graph.shape[1]
-        entry = self._medoid()
-        max_layers = 32  # V4_MAX_LAYERS
-
-        # big-endian, as Java's DataOutput: magic, version, layer 0 size,
-        # dimension, entry node, layer 0 degree, id upper bound, layer count,
-        # (size, degree) of 32 layers; then the features: their count and
-        # ordinals (INLINE_VECTORS = 0, which has no header of its own)
-        layers = [n, degree] + [0] * (2 * max_layers - 2)
-        header = np.array(
-            [0xFFFF0D61, 6, n, d, entry, degree, n, 1, *layers, 1, 0], dtype=">u4"
-        ).tobytes()
-
-        # one record per node: its ordinal, the row, the neighbor count and
-        # the neighbors (-1 padded)
-        record = np.dtype(
-            [
-                ("ordinal", ">i4"),
-                ("row", ">f4", (d,)),
-                ("count", ">i4"),
-                ("neighbors", ">i4", (degree,)),
-            ]
+        mlxvs._core.save_jvector(
+            str(path), self._dataset, self._graph, self._metric_enum
         )
-        nodes = np.zeros(n, dtype=record)
-        nodes["ordinal"] = np.arange(n)
-        nodes["row"] = data
-        valid = graph >= 0
-        nodes["count"] = valid.sum(axis=1)
-        order = np.argsort(~valid, axis=1, kind="stable")
-        nodes["neighbors"] = np.where(
-            np.take_along_axis(valid, order, 1),
-            np.take_along_axis(graph, order, 1),
-            -1,
-        )
-        with open(path, "wb") as f:
-            f.write(header)
-            f.write(nodes.tobytes())
-            # the footer: the header again, its offset, the footer magic
-            footer_at = len(header) + nodes.nbytes
-            f.write(header)
-            f.write(np.array([footer_at], dtype=">i8").tobytes())
-            f.write(np.array([0x4A564244], dtype=">u4").tobytes())
 
-    def _medoid(self):
-        """The row nearest the mean (largest dot product with it for the
-        similarity metrics): the entry point of exported graphs."""
-        import numpy as np
-
-        mean = mx.mean(self._dataset.astype(mx.float32), axis=0, keepdims=True)
-        metric = "inner_product" if self._metric == "cosine" else self._metric
-        ids = mlxvs.brute_force_knn(self._dataset, mean, 1, metric)[0]
-        return int(np.asarray(ids)[0, 0])
+    @property
+    def _metric_enum(self):
+        return getattr(mlxvs.Metric, self._metric)
 
     @classmethod
     def load(cls, path):
