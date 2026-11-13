@@ -14,7 +14,7 @@ let package = Package(
         .library(name: "MLXVS", targets: ["MLXVS"])
     ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift", "0.32.0" ..< "0.34.0")
+        .package(url: "https://github.com/ml-explore/mlx-swift", "0.31.0" ..< "0.34.0")
     ],
     targets: [
         .target(

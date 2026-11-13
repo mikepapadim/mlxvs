@@ -85,6 +85,25 @@ final class MLXVSTests: XCTestCase {
         XCTAssertTrue(result.ids.asArray(Int32.self).allSatisfy { $0 % 3 == 0 })
     }
 
+    func testBuildsIndex() throws {
+        let base = rows(5000, 32, seed: 7)
+        let queries = rows(64, 32, seed: 8)
+        for metric in [Metric.l2, .cosine] {
+            let index = try CagraIndex.build(rows: base, graphDegree: 32, metric: metric)
+            XCTAssertEqual(index.graph.shape, [5000, 32])
+            // no self loops, ids in range
+            let g = index.graph.asArray(Int32.self)
+            XCTAssertTrue(g.allSatisfy { $0 >= -1 && $0 < 5000 })
+            // the queries come from other clusters than the rows: a longer list
+            // (the Python package gets the same recall from the same graph)
+            var options = SearchOptions()
+            options.itopkSize = 128
+            let result = try index.search(queries, k: 10, options: options)
+            XCTAssertGreaterThan(
+                recall(result.ids, exact(base, queries, k: 10, metric: metric)), 0.95, "\(metric)")
+        }
+    }
+
     func testLoadsPythonIndex() throws {
         let url = Bundle.module.url(forResource: "cosine", withExtension: "safetensors", subdirectory: "Resources")!
         let index = try CagraIndex.load(url: url)

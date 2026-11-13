@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.1 (2026-11-13)
+
+- Swift: `CagraIndex.build(rows:graphDegree:metric:intermediateGraphDegree:)` and `cagraOptimize`, the C++ library's
+  pruning kernels: indexes built on the device (from an exact k-NN graph), the same graph as Python's
+  `cagra_optimize` from the same k-NN graph.
+- Swift: mlx-swift 0.31 to 0.33 (0.31.4 tested), so that apps pinned to mlx-swift 0.31 (as mlx-swift-examples) can use
+  it.
+
 ## 0.16.0 (2026-11-13)
 
 - A Swift package (`Package.swift`, product `MLXVS`) for macOS and iOS, on mlx-swift: `CagraIndex.load` reads indexes

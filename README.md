@@ -256,12 +256,16 @@ import MLXVS
 let index = try CagraIndex.load(url: Bundle.main.url(forResource: "docs", withExtension: "safetensors")!)
 let result = try index.search(queries, k: 10)     // result.ids [nq, 10], result.distances [nq, 10]
 let exact = try bruteForceKNN(base: vectors, queries: queries, k: 10, metric: .cosine)
+
+// or build the index on the device: an exact k-NN graph pruned by CAGRA's optimization
+let built = try CagraIndex.build(rows: vectors, graphDegree: 32, metric: .cosine)
 ```
 
-`CagraIndex.load` / `search` (single- and multi-CTA, filters), `graphSearch` and `bruteForceKNN`: the same results as
-the Python package (SIFT1M from the same index file: 219,000 queries/s from Swift, 200,000 from Python, `itopk_size`
-32, M3 Pro). Building graphs, IVF indexes and compressed (VPQ) indexes are Python and C++ only for now. Tests:
-`swift test` (Xcode 26+ with its Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`).
+`CagraIndex.load` / `build` / `search` (single- and multi-CTA, filters), `cagraOptimize`, `graphSearch` and
+`bruteForceKNN`: the same results as the Python package (SIFT1M from the same index file: 219,000 queries/s from Swift,
+200,000 from Python, `itopk_size` 32, M3 Pro). `CagraIndex.build` starts from an exact k-NN graph, for up to a few
+hundred thousand rows; NN-Descent, IVF and compressed (VPQ) indexes are Python and C++ only for now. mlx-swift 0.31 to
+0.33. Tests: `swift test` (Xcode 26+ with its Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`).
 
 ## Coming from cuVS
 
