@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.2 (2026-11-13)
+
+- `hamming_knn`, `IvfBinaryIndex` and `IvfRabitqIndex` work on inputs of a few rows: MLX binds small inputs in the
+  constant address space, which the kernels' row pointers did not accept (the Metal library failed to build).
+
 ## 0.15.1 (2026-11-13)
 
 - `IvfBinaryIndex.reconstruct(ids)`: the bit-packed rows of ids, as faiss's `reconstruct` (for rescoring binary

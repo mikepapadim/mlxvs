@@ -456,8 +456,8 @@ constexpr const char* IVF_RABITQ_SCAN_SOURCE = R"(
   const float qerr = BQ > 0 ? 0.433f * sqrt((float)DP) : 0.0f;
   for (int r = (int)lid; r < len; r += (int)THREADS) {
     size_t row = (size_t)(start + r);
-    const device uint* code = codes + row * (size_t)(B * WORDS);
-    const device uint* sign = code + (B - 1) * WORDS;
+    auto code = codes + row * (size_t)(B * WORDS);
+    auto sign = code + (B - 1) * WORDS;
     // stage 1: the sign bits' estimate of <r', y>, for every query
     float acc[QT];
     uint iacc[QT];
@@ -575,7 +575,7 @@ constexpr const char* IVF_BINARY_SCAN_SOURCE = R"(
   int start = offsets[list];
   int len = offsets[list + 1] - start;
   for (int r = (int)lid; r < len; r += (int)THREADS) {
-    const device uint* row = codes + (size_t)(start + r) * W;
+    auto row = codes + (size_t)(start + r) * W;
     uint acc[QT];
     for (int t = 0; t < QT; ++t) {
       acc[t] = 0u;
