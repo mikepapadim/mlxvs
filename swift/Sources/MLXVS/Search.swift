@@ -51,6 +51,11 @@ public struct SearchOptions {
 public struct Neighbors {
     public let ids: MLXArray
     public let distances: MLXArray
+
+    public init(ids: MLXArray, distances: MLXArray) {
+        self.ids = ids
+        self.distances = distances
+    }
 }
 
 public enum MLXVSError: Error, CustomStringConvertible {

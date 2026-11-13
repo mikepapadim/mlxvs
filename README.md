@@ -266,6 +266,8 @@ let built = try CagraIndex.build(rows: vectors, graphDegree: 32, metric: .cosine
 200,000 from Python, `itopk_size` 32, M3 Pro). `CagraIndex.build` starts from an exact k-NN graph, for up to a few
 hundred thousand rows; NN-Descent, IVF and compressed (VPQ) indexes are Python and C++ only for now. mlx-swift 0.31 to
 0.33. Tests: `swift test` (Xcode 26+ with its Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`).
+[examples/swift/semantic-search](examples/swift/semantic-search): embed a folder of text with mlx-swift-lm's
+`MLXEmbedders` and search it with `MLXVS`.
 
 ## Coming from cuVS
 
