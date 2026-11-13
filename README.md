@@ -1,28 +1,83 @@
 # mlxVS
 
-**cuVS for your Mac: GPU vector search on Apple silicon.**
+**cuVS for your Mac: GPU vector search on Apple silicon, from Python, C, C++ and Swift.**
 
 [![CI](https://github.com/mikepapadim/mlxvs/actions/workflows/ci.yml/badge.svg)](https://github.com/mikepapadim/mlxvs/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/mlxvs.svg)](https://pypi.org/project/mlxvs/)
+[![Python](https://img.shields.io/pypi/pyversions/mlxvs.svg)](https://pypi.org/project/mlxvs/)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%2014%2B%20%7C%20iOS%2017%2B-lightgrey.svg)](#swift-macos-and-ios)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Index a million vectors in 11 seconds, then answer 76,000 queries per second at 97.6% recall, on a MacBook Pro's
 GPU: 2.7 times the queries per second of HNSW on all 12 CPU cores at the same recall, from an index built 8 times
 faster. On a million 1536-d OpenAI embeddings: built 6 times faster, twice the queries per second
-([numbers](#benchmarks)). mlxVS brings NVIDIA [cuVS](https://github.com/rapidsai/cuvs)'s operations and parameter
-names to the Mac, built on [MLX](https://github.com/ml-explore/mlx): exact k-NN, k-means, NN-Descent, batched
-all-neighbors graphs, CAGRA graph pruning and search, and export to hnswlib. NumPy or MLX arrays in, any M-series Mac.
+([numbers](#benchmarks)). mlxVS brings NVIDIA [cuVS](https://github.com/rapidsai/cuvs)'s algorithms, parameters and
+Python API to the Mac, as hand-written Metal kernels on [MLX](https://github.com/ml-explore/mlx).
 
 ```python
 import mlxvs
 index = mlxvs.CagraIndex.build(vectors, graph_degree=32)   # 1M x 128 in ~10 s
 ids, dist = index.search(queries, k=10)                     # ~143k queries/s at 98% recall
-index.save("vectors.safetensors")
+index.save("vectors.safetensors")                           # and search it from Swift on an iPhone
 ```
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/bench-dark.png">
   <img alt="Queries per second against recall@10 on a MacBook Pro M3 Pro. SIFT1M: mlxVS float32 reaches 143,300 queries/s at 0.980 recall (index built in 9.6 s); hnswlib on 12 CPU cores reaches 36,800 at 0.964 (built in 69.7 s). ada-002 1M: mlxVS 14,400 queries/s at 0.979 (built in 93.6 s); hnswlib 4,900 at 0.975 (built in 591 s). Numbers in the Benchmarks tables." src="https://raw.githubusercontent.com/mikepapadim/mlxvs/main/docs/img/bench-light.png" width="860">
 </picture>
+
+### Highlights
+
+- **cuVS's main index families on the Apple GPU:** CAGRA (single- and multi-CTA search, filters, extend, CAGRA-Q
+  compression), IVF-Flat, IVF-PQ, IVF-SQ, IVF-RaBitQ, IVF-binary, exact k-NN (float and Hamming), NN-Descent,
+  all-neighbors graphs, k-means, refine, PCA, scalar and binary quantizers.
+- **A drop-in for cuVS's Python API:** `import mlxvs.cuvs` runs code written for `cuvs.neighbors` unchanged, and
+  reads and writes cuVS's own CAGRA index files: build on an NVIDIA GPU, search on a Mac, and back.
+- **Swift for macOS and iOS:** the same kernels through mlx-swift; build an index in Python or on the device and search
+  it in an app.
+- **Interop:** export to hnswlib and JVector, a C API (Java via FFM), scikit-learn's `NearestNeighbors` interface,
+  NumPy, MLX and `numpy.memmap` inputs larger than memory.
+
+### Which index?
+
+SIFT1M (985k x 128), 10,000 queries, recall@10, MacBook Pro M3 Pro:
+
+| Index | Memory | Recall@10 | Queries/s | Pick it for |
+|---|---:|---:|---:|---|
+| `CagraIndex` (float32) | 505 MB + graph | 0.980 | 143,300 | the fastest search at high recall |
+| `CagraIndex.compress()` (CAGRA-Q), re-ranked | 36 MB + graph | 0.981 | 103,000 | graph speed at a fourteenth of the memory |
+| `IvfFlatIndex`, 20 probes | 505 MB | 0.954 | 35,000 | cheap builds, frequent `extend` |
+| `IvfSqIndex`, 20 probes | 126 MB | 0.942 | 30,600 | IVF at a quarter of the memory |
+| `IvfPqIndex`, 20 probes, re-ranked | 63 MB | 0.954 | 18,300 | large collections, small memory |
+| `IvfRabitqIndex` (3 bits), 50 probes, re-ranked | 63 MB | 0.992 | 12,600 | near-exact results from 1 to 9 bits per dimension |
+| `brute_force_knn` | 505 MB | 1.000 | | ground truth, k-NN graphs, small collections |
+
+### Quick start
+
+```python
+import mlxvs.cuvs as cuvs                                  # code written for NVIDIA cuVS
+from mlxvs.cuvs.neighbors import cagra
+
+index = cagra.build(cagra.IndexParams(graph_degree=64), dataset)
+distances, neighbors = cagra.search(cagra.SearchParams(itopk_size=64), index, queries, k=10)
+cagra.save("index.bin", index)                             # cuVS's own file format
+```
+
+```swift
+import MLXVS                                               // .package(url: "https://github.com/mikepapadim/mlxvs", from: "0.16.1")
+
+let index = try CagraIndex.build(rows: embeddings, graphDegree: 32, metric: .cosine)
+let result = try index.search(queries, k: 10)              // on the GPU of a Mac or an iPhone
+```
+
+### Integrations (in review)
+
+Pull requests adding mlxVS as the Apple-silicon backend of: [sentence-transformers](https://github.com/huggingface/sentence-transformers/pull/4371)
+(`semantic_search_mlxvs`), [PyLate](https://github.com/lightonai/pylate/pull/246) (ColBERT index),
+[txtai](https://github.com/neuml/txtai/pull/1556) (ANN backend), [sklearn-ann](https://github.com/scikit-learn-contrib/sklearn-ann/pull/171)
+(scikit-learn k-NN transformer), [openTSNE](https://github.com/pavlin-policar/openTSNE/pull/296) and
+[PaCMAP](https://github.com/YingfanWang/PaCMAP/pull/150) (k-NN graphs), and [implicit](https://github.com/benfred/implicit/pull/763)
+(recommendations).
 
 Use it for approximate nearest-neighbor search, for the k-NN graph behind UMAP, t-SNE, clustering and
 deduplication, for exact k-NN ground truth, or as the build step of a graph index (HNSW, Vamana, CAGRA).
