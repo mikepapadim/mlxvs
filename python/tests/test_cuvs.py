@@ -843,7 +843,10 @@ def test_tiny_inputs():
 
     codes = np.array([[0b1111, 0], [0b1, 0]], dtype=np.uint8)
     ids, dist = mlxvs.hamming_knn(codes, codes[:1], 2)
-    assert np.asarray(ids)[0].tolist() == [0, 1] and np.asarray(dist)[0].tolist() == [0.0, 3.0]
+    assert np.asarray(ids)[0].tolist() == [0, 1] and np.asarray(dist)[0].tolist() == [
+        0.0,
+        3.0,
+    ]
     idx = mlxvs.IvfBinaryIndex.build(codes, n_lists=1)
     assert np.asarray(idx.search(codes, 1, n_probes=1)[0])[:, 0].tolist() == [0, 1]
     x = np.random.default_rng(14).standard_normal((3, 8)).astype(np.float32)
