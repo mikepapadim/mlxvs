@@ -1,7 +1,7 @@
 // Copyright © 2026 mikepapadim
 
 //
-// IVF-Flat: recall against exact k-NN, exact when every list is scanned, and
+// IVF-Flat, IVF-PQ, IVF-SQ and IVF-RaBitQ: recall against exact k-NN, and
 // extend.
 #include <algorithm>
 #include <cstdio>
@@ -172,7 +172,91 @@ static void pq_extend_case() {
   check(ok, "ivf_pq extend");
 }
 
+static void sq_case(Metric metric) {
+  int n = 20000, d = 64, nq = 500, k = 10;
+  auto all = low_rank(n + nq, d, 12, 91);
+  mx::array x(all.data(), {n, d}, mx::float32);
+  mx::array q(all.data() + (size_t)n * d, {nq, d}, mx::float32);
+  bool l2 = metric == Metric::L2;
+  mlxvs::IvfSqOptions o;
+  o.n_lists = 64;
+  auto index = mlxvs::ivf_sq_build(x, metric, o);
+  bool shape = index.codes.shape(0) == n && index.codes.shape(1) == d &&
+      index.codes.dtype() == mx::uint8;
+  auto exact = mlxvs::brute_force_knn(x, q, k, metric);
+  mlxvs::IvfSearchOptions so;
+  so.n_probes = 64;
+  auto approx = mlxvs::ivf_sq_search(index, q, k, so);
+  bool valid;
+  double r = recall(approx, exact, nq, k, l2, valid);
+  // extend: the last 1000 rows added to an index of the others find
+  // themselves
+  auto part =
+      mlxvs::ivf_sq_build(mx::slice(x, {0, 0}, {n - 1000, d}), metric, o);
+  part = mlxvs::ivf_sq_extend(part, mx::slice(x, {n - 1000, 0}, {n, d}));
+  auto self =
+      mlxvs::ivf_sq_search(part, mx::slice(x, {n - 1000, 0}, {n, d}), 1, so);
+  mx::eval(self.ids);
+  int found = 0;
+  for (int i = 0; i < 1000; ++i) {
+    found += self.ids.data<int>()[i] == n - 1000 + i;
+  }
+  // a row is its own nearest by L2 and cosine, not by inner product
+  bool ok = shape && valid && r >= 0.9 &&
+      (metric == Metric::InnerProduct || found >= 950);
+  std::printf(
+      "%-6s ivf_sq %-6s n_probes=64: recall@10 %.4f; extend: %d/1000 find themselves\n",
+      ok ? "PASS" : "FAIL",
+      metric_name(metric),
+      r,
+      found);
+  check(ok, "ivf_sq");
+}
+
+static void rabitq_case(Metric metric, int bits, mlxvs::RabitqMode mode) {
+  int n = 20000, d = 64, nq = 500, k = 10;
+  auto all = low_rank(n + nq, d, 12, 101);
+  mx::array x(all.data(), {n, d}, mx::float32);
+  mx::array q(all.data() + (size_t)n * d, {nq, d}, mx::float32);
+  bool l2 = metric == Metric::L2;
+  mlxvs::IvfRabitqOptions o;
+  o.n_lists = 64;
+  o.bits_per_dim = bits;
+  auto index = mlxvs::ivf_rabitq_build(x, metric, o);
+  bool shape = index.codes.shape(0) == n && index.codes.shape(1) == bits &&
+      index.codes.shape(2) == 2 && index.factors.shape(1) == 4;
+  auto exact = mlxvs::brute_force_knn(x, q, k, metric);
+  mlxvs::IvfRabitqSearchOptions so;
+  so.n_probes = 64;
+  so.mode = mode;
+  auto approx = mlxvs::ivf_rabitq_search(index, q, k, so);
+  auto wide = mlxvs::ivf_rabitq_search(index, q, 4 * k, so);
+  auto refined = mlxvs::refine(x, q, wide.ids, k, metric);
+  bool valid_a, valid_r;
+  double r_a = recall(approx, exact, nq, k, l2, valid_a);
+  double r_r = recall(refined, exact, nq, k, l2, valid_r);
+  double floor = bits == 1 ? 0.3 : bits <= 4 ? 0.7 : 0.85;
+  bool ok = shape && valid_r && r_a >= floor && r_r >= (bits == 1 ? 0.8 : 0.97);
+  std::printf(
+      "%-6s ivf_rabitq %-6s bits=%d mode=%d n_probes=64: recall@10 %.4f, refined from 40 %.4f\n",
+      ok ? "PASS" : "FAIL",
+      metric_name(metric),
+      bits,
+      (int)mode,
+      r_a,
+      r_r);
+  check(ok, "ivf_rabitq");
+}
+
 int main() {
+  sq_case(Metric::L2);
+  sq_case(Metric::InnerProduct);
+  sq_case(Metric::Cosine);
+  rabitq_case(Metric::L2, 1, mlxvs::RabitqMode::QUANT4);
+  rabitq_case(Metric::L2, 3, mlxvs::RabitqMode::QUANT4);
+  rabitq_case(Metric::L2, 5, mlxvs::RabitqMode::QUANT8);
+  rabitq_case(Metric::InnerProduct, 4, mlxvs::RabitqMode::LUT32);
+  rabitq_case(Metric::Cosine, 7, mlxvs::RabitqMode::LUT16);
   pq_case(Metric::L2);
   pq_case(Metric::InnerProduct);
   pq_case(Metric::Cosine);

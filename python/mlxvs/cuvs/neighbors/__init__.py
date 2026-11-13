@@ -9,6 +9,8 @@ from mlxvs.cuvs.neighbors import (
     filters,
     ivf_flat,
     ivf_pq,
+    ivf_rabitq,
+    ivf_sq,
     nn_descent,
 )
 from mlxvs.cuvs.neighbors.refine import refine
@@ -20,6 +22,8 @@ __all__ = [
     "filters",
     "ivf_flat",
     "ivf_pq",
+    "ivf_rabitq",
+    "ivf_sq",
     "nn_descent",
     "refine",
 ]

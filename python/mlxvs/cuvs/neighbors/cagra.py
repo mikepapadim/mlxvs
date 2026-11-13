@@ -154,16 +154,16 @@ class SearchParams:
 
     def _kwargs(self):
         algo = {"multi_kernel": "multi_cta"}.get(self.algo, self.algo)
-        kw = dict(
-            itopk_size=self.itopk_size,
-            search_width=self.search_width,
-            algo=algo,
-            team_size=self.team_size,
-            max_iterations=self.max_iterations,
-            min_iterations=self.min_iterations,
-            num_random_samplings=self.num_random_samplings,
-            seed=self.rand_xor_mask & 0x7FFFFFFF,
-        )
+        kw = {
+            "itopk_size": self.itopk_size,
+            "search_width": self.search_width,
+            "algo": algo,
+            "team_size": self.team_size,
+            "max_iterations": self.max_iterations,
+            "min_iterations": self.min_iterations,
+            "num_random_samplings": self.num_random_samplings,
+            "seed": self.rand_xor_mask & 0x7FFFFFFF,
+        }
         return kw
 
 

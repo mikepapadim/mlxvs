@@ -361,6 +361,243 @@ NB_MODULE(_core, m) {
       "Adds rows to an IVF-Flat index (IvfFlatIndex.extend calls it).");
 
   m.def(
+      "ivf_sq_build",
+      [](const mx::array& rows,
+         mlxvs::Metric metric,
+         int n_lists,
+         int kmeans_n_iters,
+         int max_train_points_per_cluster,
+         unsigned long long seed,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfSqOptions o;
+        o.n_lists = n_lists;
+        o.kmeans_n_iters = kmeans_n_iters;
+        o.max_train_points_per_cluster = max_train_points_per_cluster;
+        o.seed = seed;
+        auto i = mlxvs::ivf_sq_build(rows, metric, o, s);
+        return nb::make_tuple(
+            i.centers, i.codes, i.indices, i.offsets, i.vmin, i.delta);
+      },
+      "rows"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "n_lists"_a = 1024,
+      "kmeans_n_iters"_a = 20,
+      "max_train_points_per_cluster"_a = 256,
+      "seed"_a = 42,
+      "stream"_a = nb::none(),
+      "Builds an IVF-SQ index; returns (centers, codes, indices, offsets, "
+      "vmin, delta). IvfSqIndex.build calls it.");
+
+  m.def(
+      "ivf_sq_search",
+      [](const mx::array& centers,
+         const mx::array& codes,
+         const mx::array& indices,
+         const mx::array& offsets,
+         const mx::array& vmin,
+         const mx::array& delta,
+         mlxvs::Metric metric,
+         const mx::array& queries,
+         int k,
+         int n_probes,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfSqIndex i{
+            centers, codes, indices, offsets, vmin, delta, metric};
+        mlxvs::IvfSearchOptions o;
+        o.n_probes = n_probes;
+        auto r = mlxvs::ivf_sq_search(i, queries, k, o, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "centers"_a,
+      "codes"_a,
+      "indices"_a,
+      "offsets"_a,
+      "vmin"_a,
+      "delta"_a,
+      "metric"_a,
+      "queries"_a,
+      "k"_a,
+      nb::kw_only(),
+      "n_probes"_a = 20,
+      "stream"_a = nb::none(),
+      "Searches an IVF-SQ index (IvfSqIndex.search calls it).");
+
+  m.def(
+      "ivf_sq_extend",
+      [](const mx::array& centers,
+         const mx::array& codes,
+         const mx::array& indices,
+         const mx::array& offsets,
+         const mx::array& vmin,
+         const mx::array& delta,
+         mlxvs::Metric metric,
+         const mx::array& new_rows,
+         std::optional<mx::array> new_ids,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfSqIndex i{
+            centers, codes, indices, offsets, vmin, delta, metric};
+        auto r = mlxvs::ivf_sq_extend(i, new_rows, new_ids, s);
+        return nb::make_tuple(
+            r.centers, r.codes, r.indices, r.offsets, r.vmin, r.delta);
+      },
+      "centers"_a,
+      "codes"_a,
+      "indices"_a,
+      "offsets"_a,
+      "vmin"_a,
+      "delta"_a,
+      "metric"_a,
+      "new_rows"_a,
+      "new_ids"_a = nb::none(),
+      "stream"_a = nb::none(),
+      "Adds rows to an IVF-SQ index (IvfSqIndex.extend calls it).");
+
+  nb::enum_<mlxvs::RabitqMode>(m, "RabitqMode")
+      .value("lut16", mlxvs::RabitqMode::LUT16)
+      .value("lut32", mlxvs::RabitqMode::LUT32)
+      .value("quant4", mlxvs::RabitqMode::QUANT4)
+      .value("quant8", mlxvs::RabitqMode::QUANT8);
+
+  m.def(
+      "ivf_rabitq_build",
+      [](const mx::array& rows,
+         mlxvs::Metric metric,
+         int n_lists,
+         int bits_per_dim,
+         int kmeans_n_iters,
+         int max_train_points_per_cluster,
+         bool fast_quantize,
+         unsigned long long seed,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfRabitqOptions o;
+        o.n_lists = n_lists;
+        o.bits_per_dim = bits_per_dim;
+        o.kmeans_n_iters = kmeans_n_iters;
+        o.max_train_points_per_cluster = max_train_points_per_cluster;
+        o.fast_quantize = fast_quantize;
+        o.seed = seed;
+        auto i = mlxvs::ivf_rabitq_build(rows, metric, o, s);
+        return nb::make_tuple(
+            i.centers,
+            i.centers_rot,
+            i.rotation,
+            i.codes,
+            i.factors,
+            i.indices,
+            i.offsets,
+            i.scale);
+      },
+      "rows"_a,
+      "metric"_a = mlxvs::Metric::L2,
+      nb::kw_only(),
+      "n_lists"_a = 1024,
+      "bits_per_dim"_a = 3,
+      "kmeans_n_iters"_a = 20,
+      "max_train_points_per_cluster"_a = 256,
+      "fast_quantize"_a = true,
+      "seed"_a = 42,
+      "stream"_a = nb::none(),
+      "Builds an IVF-RaBitQ index; returns (centers, centers_rot, rotation, "
+      "codes, factors, indices, offsets, scale). IvfRabitqIndex.build calls it.");
+
+  m.def(
+      "ivf_rabitq_search",
+      [](const mx::array& centers,
+         const mx::array& centers_rot,
+         const mx::array& rotation,
+         const mx::array& codes,
+         const mx::array& factors,
+         const mx::array& indices,
+         const mx::array& offsets,
+         mlxvs::Metric metric,
+         int bits_per_dim,
+         float scale,
+         const mx::array& queries,
+         int k,
+         int n_probes,
+         mlxvs::RabitqMode mode,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfRabitqIndex i{
+            centers,
+            centers_rot,
+            rotation,
+            codes,
+            factors,
+            indices,
+            offsets,
+            metric,
+            bits_per_dim,
+            scale};
+        mlxvs::IvfRabitqSearchOptions o;
+        o.n_probes = n_probes;
+        o.mode = mode;
+        auto r = mlxvs::ivf_rabitq_search(i, queries, k, o, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "centers"_a,
+      "centers_rot"_a,
+      "rotation"_a,
+      "codes"_a,
+      "factors"_a,
+      "indices"_a,
+      "offsets"_a,
+      "metric"_a,
+      "bits_per_dim"_a,
+      "scale"_a,
+      "queries"_a,
+      "k"_a,
+      nb::kw_only(),
+      "n_probes"_a = 20,
+      "mode"_a = mlxvs::RabitqMode::QUANT4,
+      "stream"_a = nb::none(),
+      "Searches an IVF-RaBitQ index (IvfRabitqIndex.search calls it).");
+
+  m.def(
+      "ivf_rabitq_extend",
+      [](const mx::array& centers,
+         const mx::array& centers_rot,
+         const mx::array& rotation,
+         const mx::array& codes,
+         const mx::array& factors,
+         const mx::array& indices,
+         const mx::array& offsets,
+         mlxvs::Metric metric,
+         int bits_per_dim,
+         float scale,
+         const mx::array& new_rows,
+         std::optional<mx::array> new_ids,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfRabitqIndex i{
+            centers,
+            centers_rot,
+            rotation,
+            codes,
+            factors,
+            indices,
+            offsets,
+            metric,
+            bits_per_dim,
+            scale};
+        auto r = mlxvs::ivf_rabitq_extend(i, new_rows, new_ids, s);
+        return nb::make_tuple(r.codes, r.factors, r.indices, r.offsets);
+      },
+      "centers"_a,
+      "centers_rot"_a,
+      "rotation"_a,
+      "codes"_a,
+      "factors"_a,
+      "indices"_a,
+      "offsets"_a,
+      "metric"_a,
+      "bits_per_dim"_a,
+      "scale"_a,
+      "new_rows"_a,
+      "new_ids"_a = nb::none(),
+      "stream"_a = nb::none(),
+      "Adds rows to an IVF-RaBitQ index (IvfRabitqIndex.extend calls it).");
+
+  m.def(
       "ivf_pq_build",
       [](const mx::array& rows,
          mlxvs::Metric metric,

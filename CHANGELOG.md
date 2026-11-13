@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.14.0 (2026-11-13)
+
+- `IvfSqIndex` (C++ `ivf_sq_build`, `ivf_sq_search`, `ivf_sq_extend`), as cuVS's IVF-SQ: rows stored as one byte per
+  dimension of their residual to the list's center, `center + vmin + delta * code` with the residuals'
+  per-dimension range widened by 5% (cuVS's margin) in 255 steps, trained on `n_lists * 256` rows. The scan decodes
+  on the GPU, IVF-Flat's grouping by list. SIFT1M: 126 MB of codes for 505 MB of rows; recall@10 0.942 at 30,600
+  queries/s (`n_probes` 20), 0.978 at 13,700 (50).
+- `IvfRabitqIndex` (C++ `ivf_rabitq_build`, `ivf_rabitq_search`, `ivf_rabitq_extend`), as cuVS's IVF-RaBitQ:
+  residuals rotated by a random orthogonal matrix, stored as `bits_per_dim` (1 to 9) bit planes, sign bits on top
+  (RaBitQ; Extended RaBitQ's codes and cuVS's constant scale above one bit) with four factors per row. Searched in
+  cuVS's two stages in one kernel: the sign bits scored with popcounts against the query quantized to 4 or 8 bits
+  (`quant4`, `quant8`; `lut16` / `lut32` with the float query), with RaBitQ's error bound; rows whose bound reaches
+  the query's threshold (the k-th best score in its nearest lists) are scored from all their bits. SIFT1M, 3 bits:
+  63 MB of codes; recall@10 0.856 at 15,300 queries/s (`n_probes` 50), 0.992 re-ranked from 40 candidates.
+- `mlxvs.cuvs`: `neighbors.ivf_sq`, `neighbors.ivf_rabitq`, `preprocessing.quantize.scalar` (cuVS's quantile
+  interval onto int8), `preprocessing.quantize.binary` (bits packed eight to a byte; zero, mean or sampled-median
+  thresholds) and `preprocessing.pca` (covariance eigendecomposition, cuVS's outputs and whitening).
+
 ## 0.13.0 (2026-11-13)
 
 - `mlxvs.cuvs`: cuVS's Python API (26.10) on mlxvs, for code written against cuVS to run on a Mac by changing

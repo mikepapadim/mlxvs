@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlxvs"
-version = "0.13.0"
+version = "0.14.0"
 description = "GPU k-NN search and k-NN graph construction on Apple silicon, built on MLX"
 readme = "README.md"
 license = "Apache-2.0"
@@ -38,7 +38,7 @@ Homepage = "https://github.com/mikepapadim/mlxvs"
 Issues = "https://github.com/mikepapadim/mlxvs/issues"
 
 [tool.setuptools]
-packages = ["mlxvs", "mlxvs.cuvs", "mlxvs.cuvs.cluster", "mlxvs.cuvs.neighbors"]
+packages = ["mlxvs", "mlxvs.cuvs", "mlxvs.cuvs.cluster", "mlxvs.cuvs.neighbors", "mlxvs.cuvs.preprocessing", "mlxvs.cuvs.preprocessing.quantize"]
 package-dir = { "" = "python" }
 zip-safe = false
 

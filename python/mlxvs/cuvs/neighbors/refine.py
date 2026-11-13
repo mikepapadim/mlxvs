@@ -47,7 +47,7 @@ def refine(
         candidates.copy_to_host() if hasattr(candidates, "copy_to_host") else candidates
     )
     data = dataset
-    if not (type(dataset).__module__ == "numpy"):
+    if type(dataset).__module__ != "numpy":
         data = to_mlx(dataset)
     ids, scores = mlxvs.refine(data, to_mlx(queries), cand, k, m)
     dist = _common.to_cuvs_distances(scores.astype(mx.float32), t)

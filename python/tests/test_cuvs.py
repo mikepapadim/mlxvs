@@ -2,11 +2,9 @@
 
 """mlxvs.cuvs: cuVS's Python API, checked as cuVS's own tests check it."""
 
+import mlx.core as mx
 import numpy as np
 import pytest
-
-import mlx.core as mx
-
 from mlxvs.cuvs import common
 from mlxvs.cuvs.cluster import kmeans
 from mlxvs.cuvs.common import device_ndarray
@@ -18,9 +16,13 @@ from mlxvs.cuvs.neighbors import (
     filters,
     ivf_flat,
     ivf_pq,
+    ivf_rabitq,
+    ivf_sq,
     nn_descent,
     refine,
 )
+from mlxvs.cuvs.preprocessing import pca
+from mlxvs.cuvs.preprocessing.quantize import binary, scalar
 
 spatial = pytest.importorskip("scipy.spatial.distance")
 
@@ -202,7 +204,7 @@ def test_brute_force_prefilter(kind):
     else:
         allowed = rng.random((20, 300)) < 0.3
         pre = filters.from_bitmap(allowed)
-    d, i = brute_force.search(brute_force.build(index), queries, 7, prefilter=pre)
+    _, i = brute_force.search(brute_force.build(index), queries, 7, prefilter=pre)
     i = i.copy_to_host()
     pw = np.where(allowed, spatial.cdist(queries, index, "sqeuclidean"), np.inf)
     np.testing.assert_array_equal(np.sort(i, 1), np.sort(np.argsort(pw, 1)[:, :7], 1))
@@ -411,13 +413,13 @@ def test_ivf_flat(data, tmp_path, metric):
     dataset, queries = data
     p = ivf_flat.IndexParams(n_lists=32, metric=metric)
     index = ivf_flat.build(p, dataset)
-    d, i = ivf_flat.search(ivf_flat.SearchParams(n_probes=32), index, queries, 10)
+    _, i = ivf_flat.search(ivf_flat.SearchParams(n_probes=32), index, queries, 10)
     assert i.dtype == np.int64
     truth = _exact(dataset, queries, 10, metric)
     assert _recall(i.copy_to_host(), truth) > 0.99
     path = str(tmp_path / "ivf.bin")
     ivf_flat.save(path, index)
-    d2, i2 = ivf_flat.search(
+    _, i2 = ivf_flat.search(
         ivf_flat.SearchParams(n_probes=32), ivf_flat.load(path), queries, 10
     )
     np.testing.assert_array_equal(i.copy_to_host(), i2.copy_to_host())
@@ -555,3 +557,209 @@ def test_kmeans_array_init_weights(data):
         c.copy_to_host(), c2.copy_to_host(), rtol=1e-4, atol=1e-4
     )
     np.testing.assert_allclose(inertia, inertia2, rtol=1e-4)
+
+
+# --- preprocessing ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
+@pytest.mark.parametrize("inplace", [True, False])
+def test_scalar_quantizer(dtype, inplace):
+    # as cuVS's test_scalar_quantizer.py
+    x = np.random.default_rng(6).random((1000, 50)).astype(dtype)
+    out = device_ndarray(np.zeros((1000, 50), np.int8)) if inplace else None
+    q = scalar.train(scalar.QuantizerParams(quantile=0.99), device_ndarray(x))
+    t = scalar.transform(q, device_ndarray(x), output=out)
+    got = (out if inplace else t).copy_to_host()
+    expected = np.int8(255 * (x - q.min) / (q.max - q.min) - 128)
+    assert np.allclose(expected, got, atol=2, rtol=2)
+    back = scalar.inverse_transform(q, t).copy_to_host().astype(np.float32)
+    inside = (x > q.min) & (x < q.max)
+    np.testing.assert_allclose(
+        back[inside], x.astype(np.float32)[inside], atol=(q.max - q.min) / 255
+    )
+    # the interval holds the middle 99% of the values
+    share = np.mean((x >= q.min) & (x <= q.max))
+    assert 0.985 <= share <= 0.995
+
+
+@pytest.mark.parametrize("n_cols", [7, 64, 100])
+def test_binary_quantizer(n_cols):
+    # as cuVS's test_binary_quantizer.py
+    x = np.random.default_rng(7).standard_normal((500, n_cols)).astype(np.float32)
+    got = binary.transform(device_ndarray(x)).copy_to_host()
+    np.testing.assert_array_equal(got, np.packbits(x > 0, axis=-1, bitorder="little"))
+    q = binary.train(binary.QuantizerParams(threshold="mean"), x)
+    got = binary.transform(q, x).copy_to_host()
+    np.testing.assert_array_equal(
+        got, np.packbits(x > x.mean(0), axis=-1, bitorder="little")
+    )
+
+
+@pytest.mark.parametrize("whiten", [False, True])
+def test_pca(whiten):
+    rng = np.random.default_rng(8)
+    x = (rng.standard_normal((800, 6)) @ rng.standard_normal((6, 20))).astype(
+        np.float32
+    )
+    x += 0.01 * rng.standard_normal(x.shape).astype(np.float32)
+    params = pca.Params(n_components=6, whiten=whiten)
+    res = pca.fit_transform(params, x)
+    assert res.trans_input.shape == (800, 6) and res.components.shape == (6, 20)
+    # against the SVD of the centred data
+    xc = x - x.mean(0)
+    _, s, vt = np.linalg.svd(xc.astype(np.float64), full_matrices=False)
+    np.testing.assert_allclose(res.singular_vals.copy_to_host(), s[:6], rtol=1e-3)
+    np.testing.assert_allclose(
+        res.explained_var.copy_to_host(), s[:6] ** 2 / 799, rtol=1e-3
+    )
+    comps = res.components.copy_to_host()
+    np.testing.assert_allclose(np.abs(comps @ vt[:6].T), np.eye(6), atol=1e-3)
+    t = res.trans_input.copy_to_host()
+    if whiten:
+        np.testing.assert_allclose(t.var(0, ddof=1), np.ones(6), rtol=1e-2)
+    t2 = pca.transform(
+        params, x, res.components, res.singular_vals, res.mu
+    ).copy_to_host()
+    np.testing.assert_allclose(t, t2, rtol=1e-4, atol=1e-4)
+    back = pca.inverse_transform(
+        params, res.trans_input, res.components, res.singular_vals, res.mu
+    )
+    assert np.max(np.abs(back.copy_to_host() - x)) < 0.1
+
+
+# --- ivf_sq --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "metric", ["sqeuclidean", "inner_product", "cosine", "euclidean"]
+)
+def test_ivf_sq(data, tmp_path, metric):
+    dataset, queries = data
+    index = ivf_sq.build(ivf_sq.IndexParams(n_lists=32, metric=metric), dataset)
+    d, i = ivf_sq.search(ivf_sq.SearchParams(n_probes=32), index, queries, 10)
+    i, d = i.copy_to_host(), d.copy_to_host()
+    assert i.dtype == np.int64
+    truth = _exact(dataset, queries, 10, metric)
+    assert _recall(i, truth) > 0.9
+    # the distances are those of the decoded rows: close to the exact ones
+    q, rows = queries, dataset[i[:, 0]]
+    want = {
+        "sqeuclidean": np.sum((q - rows) ** 2, 1),
+        "euclidean": np.sqrt(np.sum((q - rows) ** 2, 1)),
+        "inner_product": np.sum(q * rows, 1),
+        "cosine": 1
+        - np.sum(q * rows, 1)
+        / (np.linalg.norm(q, axis=1) * np.linalg.norm(rows, axis=1)),
+    }[metric]
+    # one byte per dimension: errors of a fraction of the quantization step
+    assert np.abs(d[:, 0] - want).mean() < 0.05 * np.abs(want).mean() + 0.01
+    path = str(tmp_path / "sq.bin")
+    ivf_sq.save(path, index)
+    _, i2 = ivf_sq.search(
+        ivf_sq.SearchParams(n_probes=32), ivf_sq.load(path), queries, 10
+    )
+    np.testing.assert_array_equal(i, i2.copy_to_host())
+
+
+def test_ivf_sq_extend_filter(data):
+    dataset, queries = data
+    index = ivf_sq.build(
+        ivf_sq.IndexParams(n_lists=16, add_data_on_build=False), dataset
+    )
+    assert len(index) == 0
+    ivf_sq.extend(index, dataset, np.arange(len(dataset)))
+    keep = np.zeros(len(dataset), bool)
+    keep[::2] = True
+    _, i = ivf_sq.search(
+        ivf_sq.SearchParams(n_probes=16),
+        index,
+        queries,
+        10,
+        filter=filters.from_bitset(keep),
+    )
+    i = i.copy_to_host()
+    assert keep[i].all()
+    truth = np.flatnonzero(keep)[_exact(dataset[keep], queries, 10, "sqeuclidean")]
+    assert _recall(i, truth) > 0.9
+
+
+@pytest.mark.parametrize("d", [3, 130, 1100])
+def test_ivf_sq_dims(d):
+    rng = np.random.default_rng(9)
+    x = rng.standard_normal((2000, d)).astype(np.float32)
+    idx = __import__("mlxvs").IvfSqIndex.build(x, n_lists=8)
+    ids, _ = idx.search(x[:50], 5, n_probes=8)
+    assert (np.asarray(ids)[:, 0] == np.arange(50)).mean() > 0.95
+
+
+# --- ivf_rabitq ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bits", [1, 3, 5, 9])
+@pytest.mark.parametrize("mode", ["quant4", "quant8", "lut16", "lut32"])
+def test_ivf_rabitq_modes(data, bits, mode):
+    dataset, queries = data
+    index = ivf_rabitq.build(
+        ivf_rabitq.IndexParams(n_lists=32, bits_per_dim=bits), dataset
+    )
+    d, i = ivf_rabitq.search(
+        ivf_rabitq.SearchParams(n_probes=32, mode=mode), index, queries, 10
+    )
+    i, d = i.copy_to_host(), d.copy_to_host()
+    truth = _exact(dataset, queries, 10, "sqeuclidean")
+    # more bits: closer to exact (RaBitQ's error falls as 2^-bits)
+    floor = {1: 0.45, 3: 0.8, 5: 0.88, 9: 0.9}[bits]
+    if mode == "quant4":
+        floor = min(floor, 0.85)
+    assert _recall(i, truth) > floor
+    exact = np.sum((queries[:, None] - dataset[i]) ** 2, -1)
+    rel = np.abs(d - exact).mean() / exact.mean()
+    assert rel < {1: 0.35, 3: 0.1, 5: 0.1, 9: 0.1}[bits]
+
+
+@pytest.mark.parametrize("metric", ["inner_product", "cosine", "euclidean"])
+def test_ivf_rabitq_metrics(data, metric, tmp_path):
+    dataset, queries = data
+    if metric != "euclidean":
+        dataset = dataset / np.linalg.norm(dataset, axis=1, keepdims=True)
+        queries = queries / np.linalg.norm(queries, axis=1, keepdims=True)
+    index = ivf_rabitq.build(
+        ivf_rabitq.IndexParams(n_lists=32, metric=metric, bits_per_dim=7), dataset
+    )
+    sp = ivf_rabitq.SearchParams(n_probes=32, mode="quant8")
+    _, i = ivf_rabitq.search(sp, index, queries, 10)
+    assert _recall(i.copy_to_host(), _exact(dataset, queries, 10, metric)) > 0.85
+    path = str(tmp_path / "rq.bin")
+    ivf_rabitq.save(path, index)
+    _, i2 = ivf_rabitq.search(sp, ivf_rabitq.load(path), queries, 10)
+    np.testing.assert_array_equal(i.copy_to_host(), i2.copy_to_host())
+
+
+def test_ivf_rabitq_extend_filter(data):
+    dataset, queries = data
+    half = len(dataset) // 2
+    index = ivf_rabitq.build(
+        ivf_rabitq.IndexParams(n_lists=16, bits_per_dim=4), dataset[:half]
+    )
+    ivf_rabitq.extend(index, dataset[half:], np.arange(half, len(dataset)))
+    assert len(index) == len(dataset)
+    keep = np.zeros(len(dataset), bool)
+    keep[::2] = True
+    sp = ivf_rabitq.SearchParams(n_probes=16, mode="lut32")
+    _, i = ivf_rabitq.search(sp, index, queries, 10, filter=filters.from_bitset(keep))
+    i = i.copy_to_host()
+    assert keep[i].all()
+    truth = np.flatnonzero(keep)[_exact(dataset[keep], queries, 10, "sqeuclidean")]
+    assert _recall(i, truth) > 0.85
+
+
+@pytest.mark.parametrize("d", [3, 200, 1100])
+def test_ivf_rabitq_dims(d):
+    import mlxvs
+
+    rng = np.random.default_rng(10)
+    x = rng.standard_normal((1500, d)).astype(np.float32)
+    idx = mlxvs.IvfRabitqIndex.build(x, n_lists=8, bits_per_dim=6, fast_quantize=False)
+    ids, _ = idx.search(x[:40] + 0.01, 5, n_probes=8, mode="lut32")
+    assert (np.asarray(ids)[:, 0] == np.arange(40)).mean() > 0.9

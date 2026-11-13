@@ -16,6 +16,6 @@ CAGRA and brute-force index files are cuVS's own formats: an index built and
 saved with cuVS on an NVIDIA GPU loads here, and back.
 """
 
-from mlxvs.cuvs import cluster, common, distance, neighbors
+from mlxvs.cuvs import cluster, common, distance, neighbors, preprocessing
 
-__all__ = ["cluster", "common", "distance", "neighbors"]
+__all__ = ["cluster", "common", "distance", "neighbors", "preprocessing"]

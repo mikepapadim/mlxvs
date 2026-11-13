@@ -44,6 +44,8 @@ deduplication, for exact k-NN ground truth, or as the build step of a graph inde
 | `CagraIndex.extend(rows)` | Adds rows without rebuilding the graph: each linked to its nearest by a graph search, half of its neighbors linking back | `cagra::extend` |
 | `IvfFlatIndex.build(rows, n_lists)`, `.search(queries, k, n_probes)`, `.extend(rows)`, `.save`, `.load` | IVF-Flat: rows in the lists of their nearest k-means center, the probed lists scanned exactly on the GPU | `ivf_flat::build`, `search`, `extend` |
 | `IvfPqIndex.build(rows, n_lists, pq_dim, pq_bits)`, `.search(queries, k, n_probes, refine_ratio, dataset)` | IVF-PQ: rows stored as product-quantization codes of their residual (8x smaller than float32 at cuVS's default `pq_dim`), searched with lookup tables on the GPU; `refine_ratio` re-ranks exactly from the rows (MLX, NumPy or `numpy.memmap`) | `ivf_pq::build`, `search`, `extend` |
+| `IvfSqIndex.build(rows, n_lists)`, `.search(queries, k, n_probes)`, `.extend(rows)` | IVF-SQ: rows stored as one byte per dimension of their residual (a quarter of float32), searched from the codes on the GPU | `ivf_sq::build`, `search`, `extend` |
+| `IvfRabitqIndex.build(rows, n_lists, bits_per_dim)`, `.search(queries, k, n_probes, mode)` | IVF-RaBitQ: residuals rotated and stored as 1 to 9 bits per dimension (RaBitQ, Extended RaBitQ), searched in cuVS's two stages: sign bits scored with popcounts against the 4- or 8-bit query, the rows that can still make the top k scored from all their bits | `ivf_rabitq::build`, `search` |
 | `refine(dataset, queries, candidates, k)` | Exact re-ranking of candidate ids | `refine` |
 | `CagraIndex.save_hnswlib(path)` | The index in hnswlib's format: build on the GPU, serve with hnswlib on any CPU | `cagra::serialize_to_hnswlib` |
 | `CagraIndex.save_jvector(path)` | The index in JVector's on-disk format (`OnDiskGraphIndex`, JVector 4): build on the GPU, search from Java; see [examples/jvector](examples/jvector) | |
@@ -256,11 +258,14 @@ cagra.save("index.bin", index)                 # cuVS's own CAGRA file format
 |---|---|
 | `neighbors.cagra` | `IndexParams`, `SearchParams`, `ExtendParams`, `AceParams`, `Index`, `build`, `search` (filters), `extend`, `from_graph`, `update_dataset`, `save`, `load`; float32, float16, int8, uint8 |
 | `neighbors.brute_force` | `build`, `search` (bitset and bitmap prefilters), `save`, `load`; every `pairwise_distance` metric |
-| `neighbors.ivf_flat`, `neighbors.ivf_pq` | `IndexParams`, `SearchParams`, `build`, `search` (filters), `extend`, `save`, `load` |
+| `neighbors.ivf_flat`, `neighbors.ivf_pq`, `neighbors.ivf_sq` | `IndexParams`, `SearchParams`, `build`, `search` (filters), `extend`, `save`, `load` |
+| `neighbors.ivf_rabitq` | the same, after cuVS's C++ `ivf_rabitq` (`bits_per_dim`, `fast_quantize_flag`; search modes `quant4`, `quant8`, `lut16`, `lut32`) |
 | `neighbors.refine`, `neighbors.nn_descent`, `neighbors.all_neighbors` | as cuVS, mutual-reachability `core_distances` included |
 | `neighbors.filters` | `no_filter`, `from_bitset`, `from_bitmap` |
 | `distance.pairwise_distance` | euclidean, sqeuclidean, l1/cityblock, chebyshev, canberra, minkowski/lp, correlation, cosine, hamming, jensenshannon, russellrao, hellinger, kl_divergence, inner_product |
 | `cluster.kmeans` | `KMeansParams`, `fit` (k-means++, random or given centers; sample weights; `n_init`), `predict`, `cluster_cost` |
+| `preprocessing.quantize.scalar`, `.binary` | `QuantizerParams`, `train`, `transform`, `inverse_transform`; binary thresholds `zero`, `mean`, `sampling_median` |
+| `preprocessing.pca` | `Params`, `fit`, `fit_transform`, `transform`, `inverse_transform` (whitening included) |
 | `common` | `device_ndarray` (`copy_to_host`, `empty`), `Resources`, `set_output_as("raft" / "numpy" / "mlx" / "torch")` |
 
 Index files: CAGRA's are cuVS's format, versions 6 (cuVS 26.10 on, the default), 5 (26.02 to 26.08) and 4 (25.x),
@@ -297,7 +302,7 @@ the others `int64`. The rest of cuVS is on the [roadmap](#roadmap).
 
 Every cuVS feature on Apple silicon, one release each:
 
-1. Quantizers (scalar, binary, product, BBQ), PCA, and the IVF-SQ, IVF-RaBitQ and IVF-binary indexes.
+1. The product and BBQ quantizers, and the IVF-binary index.
 2. Ball cover, epsilon neighborhood (radius search), `knn_merge_parts`, tiered and composite indexes, dynamic
    batching, CAGRA merge.
 3. Clustering (balanced k-means, agglomerative, spectral, GMM), spectral embedding, silhouette and trustworthiness

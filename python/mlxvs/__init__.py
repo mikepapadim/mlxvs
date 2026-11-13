@@ -22,6 +22,8 @@ __all__ = [
     "GraphBuild",
     "IvfFlatIndex",
     "IvfPqIndex",
+    "IvfRabitqIndex",
+    "IvfSqIndex",
     "Metric",
     "NearestNeighbors",
     "SearchAlgo",
@@ -37,7 +39,7 @@ __all__ = [
     "vamana_build",
     "vamana_prune",
 ]
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 
 def __getattr__(name):
@@ -234,9 +236,11 @@ for _f in (
     _f.__module__ = __name__
 
 from mlxvs._index import CagraIndex
-from mlxvs._ivf import IvfFlatIndex, IvfPqIndex, refine
+from mlxvs._ivf import IvfFlatIndex, IvfPqIndex, IvfRabitqIndex, IvfSqIndex, refine
 
 CagraIndex.__module__ = __name__
 IvfFlatIndex.__module__ = __name__
 IvfPqIndex.__module__ = __name__
+IvfSqIndex.__module__ = __name__
+IvfRabitqIndex.__module__ = __name__
 refine.__module__ = __name__

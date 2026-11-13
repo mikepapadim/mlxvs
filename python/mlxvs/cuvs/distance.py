@@ -196,7 +196,7 @@ def pairwise_distance(X, Y, out=None, metric="euclidean", p=2.0, resources=None)
             f"Inputs must have same number of columns. a={x.shape[-1]}, b={y.shape[-1]}"
         )
     if metric not in SUPPORTED_DISTANCES:
-        raise ValueError("metric %s is not supported" % metric)
+        raise ValueError(f"metric {metric} is not supported")
     if x.dtype != y.dtype:
         raise ValueError("Inputs must have the same dtypes")
     d = _pairwise(x, y, DISTANCE_TYPES[metric], p)

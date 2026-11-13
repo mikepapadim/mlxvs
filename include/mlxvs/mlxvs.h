@@ -581,6 +581,143 @@ MLXVS_API IvfFlatIndex ivf_flat_extend(
     const std::optional<mx::array>& new_ids = std::nullopt,
     mx::StreamOrDevice s = {});
 
+/** An IVF-SQ index: rows in the lists of their nearest k-means center,
+ * stored as one byte per dimension of their residual to that center
+ * (center + vmin + delta * code), as cuVS's ivf_sq::index. */
+struct IvfSqIndex {
+  /** The lists' centers, float32 [lists, d]. */
+  mx::array centers;
+  /** Every row's codes, grouped by list, uint8 [n, d]. */
+  mx::array codes;
+  /** The id of each row of codes, int32 [n]. */
+  mx::array indices;
+  /** Where each list starts in codes, int32 [lists + 1]. */
+  mx::array offsets;
+  /** The residuals' per-dimension minimum and step, float32 [d]. */
+  mx::array vmin;
+  mx::array delta;
+  Metric metric;
+};
+
+/** Options of ivf_sq_build, named after cuVS's ivf_sq::index_params. */
+struct IvfSqOptions {
+  int n_lists = 1024;
+  int kmeans_n_iters = 20;
+  /** The centers and the quantization are trained on n_lists times this
+   * many rows (at most n). */
+  int max_train_points_per_cluster = 256;
+  unsigned long long seed = 42;
+};
+
+/**
+ * Builds an IVF-SQ index of rows [n, d] (any real dtype), as cuVS's
+ * ivf_sq::build: k-means centers and the quantization (the residuals'
+ * per-dimension range, widened by 5% at each end, in 255 steps) trained on a
+ * sample, every row encoded into the list of its nearest center. Unit rows
+ * for Cosine. Runs on the GPU.
+ */
+MLXVS_API IvfSqIndex ivf_sq_build(
+    const mx::array& rows,
+    Metric metric,
+    const IvfSqOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/**
+ * The k nearest indexed rows of every query [nq, d] by their decoded rows,
+ * scanning the n_probes lists of nearest center: ids and distances as
+ * brute_force_knn. k <= 256. Runs on the GPU.
+ */
+MLXVS_API Neighbors ivf_sq_search(
+    const IvfSqIndex& index,
+    const mx::array& queries,
+    int k,
+    const IvfSearchOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/** The index with new_rows encoded into the lists of their nearest centers
+ * (centers and quantization unchanged), ids as ivf_flat_extend. */
+MLXVS_API IvfSqIndex ivf_sq_extend(
+    const IvfSqIndex& index,
+    const mx::array& new_rows,
+    const std::optional<mx::array>& new_ids = std::nullopt,
+    mx::StreamOrDevice s = {});
+
+/** An IVF-RaBitQ index, as cuVS's ivf_rabitq::index: rows in the lists of
+ * their nearest k-means center, their residuals rotated by a random
+ * orthogonal matrix and stored as bits_per_dim-bit codes (RaBitQ for 1 bit,
+ * Extended RaBitQ for more) plus two factors that make the distance
+ * estimate unbiased. */
+struct IvfRabitqIndex {
+  /** The lists' centers, float32 [lists, d]. */
+  mx::array centers;
+  /** The centers rotated, float32 [lists, dp] (dp: d rounded up to 64). */
+  mx::array centers_rot;
+  /** The rotation, float32 [dp, dp] (rows are rotated as x @ rotation). */
+  mx::array rotation;
+  /** Every row's code as bits_per_dim bit planes, grouped by list, uint32
+   * [n, bits_per_dim, dp / 32]. */
+  mx::array codes;
+  /** Every row's |r|^2, rescale factor, sign-bit rescale factor and
+   * sign-bit error bound, float32 [n, 4]. */
+  mx::array factors;
+  /** The id of each row, int32 [n]. */
+  mx::array indices;
+  /** Where each list starts, int32 [lists + 1]. */
+  mx::array offsets;
+  Metric metric;
+  int bits_per_dim;
+  /** The Extended RaBitQ scale the rows were quantized with. */
+  float scale = 0.0f;
+};
+
+/** Options of ivf_rabitq_build, named after cuVS's ivf_rabitq::index_params. */
+struct IvfRabitqOptions {
+  int n_lists = 1024;
+  /** Bits per dimension: 1 (RaBitQ) to 9 (Extended RaBitQ). */
+  int bits_per_dim = 3;
+  int kmeans_n_iters = 20;
+  int max_train_points_per_cluster = 256;
+  /** Quantize every row with one scale fitted to random vectors (cuVS's
+   * default); false: each row's best of 33 scales around it. */
+  bool fast_quantize = true;
+  unsigned long long seed = 42;
+};
+
+/** cuVS's ivf_rabitq::search_mode: QUANT4 / QUANT8 quantize the query to 4 /
+ * 8 bits and score with popcounts; LUT16 / LUT32 score with the float query. */
+enum class RabitqMode { LUT16 = 0, LUT32 = 1, QUANT4 = 2, QUANT8 = 3 };
+
+struct IvfRabitqSearchOptions {
+  int n_probes = 20;
+  RabitqMode mode = RabitqMode::QUANT4;
+};
+
+/** Builds an IVF-RaBitQ index of rows [n, d] (any real dtype). Unit rows for
+ * Cosine. Runs on the GPU. */
+MLXVS_API IvfRabitqIndex ivf_rabitq_build(
+    const mx::array& rows,
+    Metric metric,
+    const IvfRabitqOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/** The k nearest indexed rows of every query by RaBitQ's distance estimates,
+ * scanning the n_probes lists of nearest center: ids and distances as
+ * brute_force_knn. k <= 256. Runs on the GPU. */
+MLXVS_API Neighbors ivf_rabitq_search(
+    const IvfRabitqIndex& index,
+    const mx::array& queries,
+    int k,
+    const IvfRabitqSearchOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/** The index with new_rows encoded into the lists of their nearest centers,
+ * ids as ivf_flat_extend. */
+MLXVS_API IvfRabitqIndex ivf_rabitq_extend(
+    const IvfRabitqIndex& index,
+    const mx::array& new_rows,
+    const std::optional<mx::array>& new_ids = std::nullopt,
+    mx::StreamOrDevice s = {});
+
 /** An IVF-PQ index: rows in the lists of their nearest k-means center,
  * stored as product-quantization codes of their residual to that center, as
  * cuVS's ivf_pq::index. */
