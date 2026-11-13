@@ -723,6 +723,7 @@ class IvfBinaryIndex:
     """
 
     def __init__(self, centers, codes, indices, offsets, dim_bits):
+        self._position = None
         self._centers, self._codes = centers, codes
         self._indices, self._offsets = indices, offsets
         self._dim_bits = int(dim_bits)
@@ -763,10 +764,30 @@ class IvfBinaryIndex:
             IvfBinaryIndex: this index, extended.
         """
         new_ids = None if ids is None else mlxvs._array(ids).astype(mx.int32)
+        self._position = None
         self._codes, self._indices, self._offsets = mlxvs._core.ivf_binary_extend(
             *self._parts(), _packed(rows), new_ids
         )
         return self
+
+    def reconstruct(self, ids):
+        """The bit-packed rows (uint8 ``[..., bytes]``) of the given ids, as
+        faiss's ``reconstruct``; ids not in the index (-1) give zero rows."""
+        ids = mlxvs._array(ids).astype(mx.int32)
+        n = len(self)
+        top = int(mx.max(self._indices).item()) + 1 if n else 1
+        if self._position is None or self._position.shape[0] != top:
+            position = mx.full((top,), -1, mx.int32)
+            if n:
+                position = position.at[self._indices].add(
+                    mx.arange(n, dtype=mx.int32) + 1
+                )
+            self._position = position
+        inside = (ids >= 0) & (ids < top)
+        pos = mx.where(inside, self._position[mx.clip(ids, 0, top - 1)], -1)
+        words = mx.where((pos >= 0)[..., None], self._codes[mx.maximum(pos, 0)], 0)
+        rows = mx.view(mx.contiguous(words.astype(mx.uint32)), mx.uint8)
+        return rows[..., : self._dim_bits // 8]
 
     def save(self, path):
         """Saves the index to a ``.safetensors`` file."""

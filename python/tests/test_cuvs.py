@@ -821,3 +821,17 @@ def test_ivf_binary(tmp_path):
     ivf_binary.extend(empty, codes, np.arange(5000))
     d3, _ = ivf_binary.search(ivf_binary.SearchParams(n_probes=30), empty, queries, 10)
     np.testing.assert_array_equal(d3.copy_to_host(), exact)
+
+
+def test_ivf_binary_reconstruct():
+    import mlxvs
+
+    rng = np.random.default_rng(13)
+    codes = rng.integers(0, 256, (3000, 13), dtype=np.uint8)
+    idx = mlxvs.IvfBinaryIndex.build(codes, n_lists=16)
+    got = np.asarray(idx.reconstruct(np.array([[0, 5, 2999], [-1, 7, 1]])))
+    np.testing.assert_array_equal(got[0], codes[[0, 5, 2999]])
+    np.testing.assert_array_equal(got[1, 1:], codes[[7, 1]])
+    assert not got[1, 0].any()
+    idx.extend(codes[:10], np.arange(5000, 5010))
+    np.testing.assert_array_equal(np.asarray(idx.reconstruct([5003])), codes[[3]])

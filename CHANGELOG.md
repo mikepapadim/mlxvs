@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.1 (2026-11-13)
+
+- `IvfBinaryIndex.reconstruct(ids)`: the bit-packed rows of ids, as faiss's `reconstruct` (for rescoring binary
+  search results with float embeddings).
+
 ## 0.15.0 (2026-11-13)
 
 - `IvfBinaryIndex` (C++ `ivf_binary_build`, `ivf_binary_search`, `ivf_binary_extend`), as cuVS's IVF-binary:
