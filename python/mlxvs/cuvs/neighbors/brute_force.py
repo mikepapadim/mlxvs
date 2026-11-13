@@ -52,7 +52,8 @@ def build(dataset, metric="sqeuclidean", metric_arg=2.0, resources=None):
 
     Args:
         dataset: Rows ``[n, dim]``, float32 or float16.
-        metric (str): Any of ``cuvs.distance.SUPPORTED_DISTANCES``.
+        metric (str): Any of ``cuvs.distance.SUPPORTED_DISTANCES``, or
+          ``"bitwise_hamming"`` for bit-packed uint8 rows.
         metric_arg (float): ``p`` of ``"minkowski"``.
 
     Returns:
@@ -94,7 +95,23 @@ def search(
     t = index._metric
     n, nq = data.shape[0], q.shape[0]
     mask = _common.filter_mask(prefilter, n, nq)
-    if t in _FAST and mask is None and k <= n:
+    if t == _d.BitwiseHamming and mask is None and k <= min(n, 256):
+        # bit-packed uint8 rows: popcounts of XORed words on the GPU
+        ids, dist = mlxvs.hamming_knn(data, q, k)
+    elif t == _d.BitwiseHamming:
+        bits_q = to_mlx(np.unpackbits(np.asarray(q), axis=1)).astype(mx.float32)
+        bits_d = to_mlx(np.unpackbits(np.asarray(data), axis=1)).astype(mx.float32)
+        d = bits_q.shape[1] - (bits_q @ bits_d.T) - ((1 - bits_q) @ (1 - bits_d).T)
+        if mask is not None:
+            if mask.dtype == mx.uint32:
+                m = np.unpackbits(np.asarray(mask).view(np.uint8), bitorder="little")[
+                    :n
+                ]
+                mask = mx.array(m.astype(np.bool_))
+            d = mx.where(mask, d, float("inf"))
+        dist, ids = _common.select_k(d, k, True)
+        ids = mx.where(mx.isinf(dist), -1, ids.astype(mx.int64))
+    elif t in _FAST and mask is None and k <= n:
         ids, scores = mlxvs.brute_force_knn(data, q, k, _FAST[t])
         dist = _common.to_cuvs_distances(scores, t)
     else:

@@ -537,4 +537,61 @@ constexpr const char* IVF_RABITQ_SCAN_SOURCE = R"(
   }
 )";
 
+// IVF-binary scan, as IVF-Flat's (pairs grouped by list, QT queries per
+// threadgroup), over bit-packed rows: the Hamming distance is the popcount of
+// the XOR of the query's and the row's 32-bit words (zero padded).
+//
+// template: QT, W (words per row)
+// inputs: codes [n, W] uint32 (rows grouped by list), queries [nq, W]
+// uint32, items, pairs, offsets, slots, params [P, Wd] int (Wd: buffer width)
+// outputs: scores [nq, Wd] float (-inf filled; minus the Hamming distance),
+// rows [nq, Wd] int
+constexpr const char* IVF_BINARY_SCAN_SOURCE = R"(
+  const uint THREADS = 256;
+  uint item = threadgroup_position_in_grid.x;
+  uint lid = thread_position_in_threadgroup.x;
+  int P = params[0];
+  int WD = params[1];
+
+  int list = items[item * 3];
+  int first = items[item * 3 + 1];
+  int count = items[item * 3 + 2];
+
+  threadgroup uint qw[QT * W];
+  threadgroup int qid[QT];
+  threadgroup int qslot[QT];
+  for (int t = (int)lid; t < count; t += (int)THREADS) {
+    int pair = pairs[first + t];
+    qid[t] = pair / P;
+    qslot[t] = slots[pair];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (int e = (int)lid; e < count * W; e += (int)THREADS) {
+    int t = e / W;
+    qw[e] = queries[(size_t)qid[t] * W + (e % W)];
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  int start = offsets[list];
+  int len = offsets[list + 1] - start;
+  for (int r = (int)lid; r < len; r += (int)THREADS) {
+    const device uint* row = codes + (size_t)(start + r) * W;
+    uint acc[QT];
+    for (int t = 0; t < QT; ++t) {
+      acc[t] = 0u;
+    }
+    for (int w = 0; w < W; ++w) {
+      uint c = row[w];
+      for (int t = 0; t < QT; ++t) {
+        acc[t] += popcount(c ^ qw[t * W + w]);
+      }
+    }
+    for (int t = 0; t < count; ++t) {
+      size_t out = (size_t)qid[t] * (size_t)WD + (size_t)(qslot[t] + r);
+      scores[out] = -(float)acc[t];
+      rows[out] = start + r;
+    }
+  }
+)";
+
 } // namespace mlxvs::kernels

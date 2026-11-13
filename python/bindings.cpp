@@ -598,6 +598,117 @@ NB_MODULE(_core, m) {
       "Adds rows to an IVF-RaBitQ index (IvfRabitqIndex.extend calls it).");
 
   m.def(
+      "ivf_binary_build",
+      [](const mx::array& rows,
+         int n_lists,
+         int kmeans_n_iters,
+         double kmeans_trainset_fraction,
+         unsigned long long seed,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfBinaryOptions o;
+        o.n_lists = n_lists;
+        o.kmeans_n_iters = kmeans_n_iters;
+        o.kmeans_trainset_fraction = kmeans_trainset_fraction;
+        o.seed = seed;
+        auto i = mlxvs::ivf_binary_build(rows, o, s);
+        return nb::make_tuple(
+            i.centers, i.codes, i.indices, i.offsets, i.dim_bits);
+      },
+      "rows"_a,
+      nb::kw_only(),
+      "n_lists"_a = 1024,
+      "kmeans_n_iters"_a = 20,
+      "kmeans_trainset_fraction"_a = 0.5,
+      "seed"_a = 42,
+      "stream"_a = nb::none(),
+      "Builds an IVF-binary index of bit-packed uint8 rows; returns (centers, "
+      "codes, indices, offsets, dim_bits). IvfBinaryIndex.build calls it.");
+
+  m.def(
+      "ivf_binary_search",
+      [](const mx::array& centers,
+         const mx::array& codes,
+         const mx::array& indices,
+         const mx::array& offsets,
+         int dim_bits,
+         const mx::array& queries,
+         int k,
+         int n_probes,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfBinaryIndex i{centers, codes, indices, offsets, dim_bits};
+        mlxvs::IvfSearchOptions o;
+        o.n_probes = n_probes;
+        auto r = mlxvs::ivf_binary_search(i, queries, k, o, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "centers"_a,
+      "codes"_a,
+      "indices"_a,
+      "offsets"_a,
+      "dim_bits"_a,
+      "queries"_a,
+      "k"_a,
+      nb::kw_only(),
+      "n_probes"_a = 20,
+      "stream"_a = nb::none(),
+      "Searches an IVF-binary index (IvfBinaryIndex.search calls it).");
+
+  m.def(
+      "ivf_binary_extend",
+      [](const mx::array& centers,
+         const mx::array& codes,
+         const mx::array& indices,
+         const mx::array& offsets,
+         int dim_bits,
+         const mx::array& new_rows,
+         std::optional<mx::array> new_ids,
+         mx::StreamOrDevice s) {
+        mlxvs::IvfBinaryIndex i{centers, codes, indices, offsets, dim_bits};
+        auto r = mlxvs::ivf_binary_extend(i, new_rows, new_ids, s);
+        return nb::make_tuple(r.codes, r.indices, r.offsets);
+      },
+      "centers"_a,
+      "codes"_a,
+      "indices"_a,
+      "offsets"_a,
+      "dim_bits"_a,
+      "new_rows"_a,
+      "new_ids"_a = nb::none(),
+      "stream"_a = nb::none(),
+      "Adds bit-packed rows to an IVF-binary index (IvfBinaryIndex.extend "
+      "calls it).");
+
+  m.def(
+      "hamming_knn",
+      [](const mx::array& rows,
+         const mx::array& queries,
+         int k,
+         mx::StreamOrDevice s) {
+        auto r = mlxvs::hamming_knn(rows, queries, k, s);
+        return std::make_pair(r.ids, r.distances);
+      },
+      "rows"_a,
+      "queries"_a,
+      "k"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      R"(
+        Exact k-NN by Hamming distance of bit-packed rows (cuVS's BitwiseHamming
+        brute force): popcounts of XORed 32-bit words on the GPU.
+
+        Args:
+            rows (array): Bit-packed rows, uint8 ``[n, bytes]`` (as
+              ``numpy.packbits``).
+            queries (array): Bit-packed queries, uint8 ``[nq, bytes]``.
+            k (int): Neighbors per query, at most 256.
+            stream (Stream, optional): Stream or device. GPU only.
+
+        Returns:
+            tuple(array, array): ids ``int32 [nq, k]`` and Hamming distances
+            ``float32 [nq, k]``, nearest first.
+      )");
+
+  m.def(
       "ivf_pq_build",
       [](const mx::array& rows,
          mlxvs::Metric metric,

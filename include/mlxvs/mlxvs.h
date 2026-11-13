@@ -718,6 +718,71 @@ MLXVS_API IvfRabitqIndex ivf_rabitq_extend(
     const std::optional<mx::array>& new_ids = std::nullopt,
     mx::StreamOrDevice s = {});
 
+/** An IVF-binary index, as cuVS's ivf_binary::index: bit-packed rows in the
+ * lists of their nearest binary center by Hamming distance. */
+struct IvfBinaryIndex {
+  /** The lists' centers, bit-packed, uint32 [lists, words]. */
+  mx::array centers;
+  /** Every row, bit-packed and grouped by list, uint32 [n, words]. */
+  mx::array codes;
+  /** The id of each row, int32 [n]. */
+  mx::array indices;
+  /** Where each list starts, int32 [lists + 1]. */
+  mx::array offsets;
+  /** Bits per row (the bytes of the rows times 8). */
+  int dim_bits;
+};
+
+/** Options of ivf_binary_build, named after cuVS's ivf_binary::index_params. */
+struct IvfBinaryOptions {
+  int n_lists = 1024;
+  int kmeans_n_iters = 20;
+  double kmeans_trainset_fraction = 0.5;
+  unsigned long long seed = 42;
+};
+
+/**
+ * Builds an IVF-binary index of bit-packed rows uint8 [n, bytes], as cuVS's
+ * ivf_binary::build: k-means of the rows' bits as +1/-1 values, its centers
+ * binarized (the majority bit), every row added to the list of its nearest
+ * center by Hamming distance. Runs on the GPU.
+ */
+MLXVS_API IvfBinaryIndex ivf_binary_build(
+    const mx::array& rows,
+    const IvfBinaryOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/**
+ * The k nearest rows of every bit-packed query uint8 [nq, bytes] by Hamming
+ * distance, scanning the n_probes lists of nearest center: ids and Hamming
+ * distances (float32), nearest first. k <= 256. Runs on the GPU.
+ */
+MLXVS_API Neighbors ivf_binary_search(
+    const IvfBinaryIndex& index,
+    const mx::array& queries,
+    int k,
+    const IvfSearchOptions& options = {},
+    mx::StreamOrDevice s = {});
+
+/** The index with bit-packed new_rows added to the lists of their nearest
+ * centers, ids as ivf_flat_extend. */
+MLXVS_API IvfBinaryIndex ivf_binary_extend(
+    const IvfBinaryIndex& index,
+    const mx::array& new_rows,
+    const std::optional<mx::array>& new_ids = std::nullopt,
+    mx::StreamOrDevice s = {});
+
+/**
+ * Exact k-NN of bit-packed queries uint8 [nq, bytes] among bit-packed rows
+ * uint8 [n, bytes] by Hamming distance (cuVS's BitwiseHamming brute force):
+ * ids and Hamming distances, nearest first. k <= 256. Runs on the GPU.
+ */
+MLXVS_API Neighbors hamming_knn(
+    const mx::array& rows,
+    const mx::array& queries,
+    int k,
+    mx::StreamOrDevice s = {});
+
 /** An IVF-PQ index: rows in the lists of their nearest k-means center,
  * stored as product-quantization codes of their residual to that center, as
  * cuVS's ivf_pq::index. */

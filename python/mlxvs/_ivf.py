@@ -696,3 +696,123 @@ class IvfRabitqIndex:
             f"IvfRabitqIndex(n={len(self)}, dim={self.dim}, n_lists={self.n_lists}, "
             f"bits_per_dim={self._bits}, metric={self._metric!r})"
         )
+
+
+_BINARY_FORMAT = "mlxvs.ivf_binary"
+
+
+def _packed(rows):
+    x = mlxvs._array(rows)
+    if x.ndim == 1:
+        x = x[None]
+    if x.dtype != mx.uint8:
+        raise ValueError("rows must be bit-packed uint8 [n, bytes] (numpy.packbits)")
+    return x
+
+
+class IvfBinaryIndex:
+    """An IVF-binary index, as cuVS's ``ivf_binary``: bit-packed rows (uint8,
+    as ``numpy.packbits``) in the lists of their nearest binary center,
+    searched by Hamming distance with popcounts on the GPU.
+
+    Example::
+
+        codes = numpy.packbits(embeddings > 0, axis=1)
+        index = mlxvs.IvfBinaryIndex.build(codes, n_lists=1024)
+        ids, hamming = index.search(numpy.packbits(queries > 0, axis=1), k=10)
+    """
+
+    def __init__(self, centers, codes, indices, offsets, dim_bits):
+        self._centers, self._codes = centers, codes
+        self._indices, self._offsets = indices, offsets
+        self._dim_bits = int(dim_bits)
+
+    @classmethod
+    def build(cls, rows, n_lists=1024, **kwargs):
+        """Builds the index of bit-packed rows, as cuVS's
+        ``ivf_binary::build``.
+
+        Args:
+            rows (array): uint8 ``[n, bytes]``.
+            n_lists (int): k-means lists.
+            **kwargs: ``kmeans_n_iters`` (20), ``kmeans_trainset_fraction``
+              (0.5), ``seed``.
+        """
+        return cls(
+            *mlxvs._core.ivf_binary_build(_packed(rows), n_lists=n_lists, **kwargs)
+        )
+
+    def _parts(self):
+        return self._centers, self._codes, self._indices, self._offsets, self._dim_bits
+
+    def search(self, queries, k=10, n_probes=20):
+        """The k nearest rows of every bit-packed query by Hamming distance.
+
+        Returns:
+            tuple(array, array): ids ``int32 [nq, k]`` and Hamming distances
+            ``float32 [nq, k]``, nearest first.
+        """
+        return mlxvs._core.ivf_binary_search(
+            *self._parts(), _packed(queries), k, n_probes=n_probes
+        )
+
+    def extend(self, rows, ids=None):
+        """Adds bit-packed rows to the lists of their nearest centers.
+
+        Returns:
+            IvfBinaryIndex: this index, extended.
+        """
+        new_ids = None if ids is None else mlxvs._array(ids).astype(mx.int32)
+        self._codes, self._indices, self._offsets = mlxvs._core.ivf_binary_extend(
+            *self._parts(), _packed(rows), new_ids
+        )
+        return self
+
+    def save(self, path):
+        """Saves the index to a ``.safetensors`` file."""
+        path = str(path)
+        if not path.endswith(".safetensors"):
+            raise ValueError("the file name must end in .safetensors")
+        mx.save_safetensors(
+            path,
+            {
+                "centers": self._centers,
+                "codes": self._codes,
+                "indices": self._indices,
+                "offsets": self._offsets,
+            },
+            metadata={
+                "format": _BINARY_FORMAT,
+                "version": "1",
+                "dim_bits": str(self._dim_bits),
+            },
+        )
+
+    @classmethod
+    def load(cls, path):
+        """Loads an index saved by :meth:`save`."""
+        arrays, meta = mx.load(str(path), return_metadata=True)
+        if meta.get("format") != _BINARY_FORMAT:
+            raise ValueError(f"{path} is not a saved mlxvs IvfBinaryIndex")
+        return cls(
+            arrays["centers"],
+            arrays["codes"],
+            arrays["indices"],
+            arrays["offsets"],
+            int(meta["dim_bits"]),
+        )
+
+    @property
+    def n_lists(self):
+        return self._centers.shape[0]
+
+    @property
+    def dim(self):
+        """Bits per row."""
+        return self._dim_bits
+
+    def __len__(self):
+        return self._codes.shape[0]
+
+    def __repr__(self):
+        return f"IvfBinaryIndex(n={len(self)}, bits={self._dim_bits}, n_lists={self.n_lists})"

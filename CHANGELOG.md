@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.0 (2026-11-13)
+
+- `IvfBinaryIndex` (C++ `ivf_binary_build`, `ivf_binary_search`, `ivf_binary_extend`), as cuVS's IVF-binary:
+  bit-packed rows in the lists of binary centers (k-means of the bits as +1/-1, binarized by majority), scanned by
+  Hamming distance with popcounts of XORed 32-bit words, IVF-Flat's grouping by list.
+- `hamming_knn(codes, queries, k)` (C++ too): exact k-NN by Hamming distance, the rows in tiles of lists every query
+  scans, the tiles' best merged. OpenAI ada-002 binarized (982,790 x 1536 bits): 1,000 queries in 645 ms, k = 40.
+- `mlxvs.cuvs`: `neighbors.ivf_binary`, and `brute_force` with `metric="bitwise_hamming"` (cuVS's `BitwiseHamming`).
+
 ## 0.14.0 (2026-11-13)
 
 - `IvfSqIndex` (C++ `ivf_sq_build`, `ivf_sq_search`, `ivf_sq_extend`), as cuVS's IVF-SQ: rows stored as one byte per

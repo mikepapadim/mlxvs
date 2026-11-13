@@ -20,6 +20,7 @@ from mlxvs._core import GraphBuild, Metric, SearchAlgo
 __all__ = [
     "CagraIndex",
     "GraphBuild",
+    "IvfBinaryIndex",
     "IvfFlatIndex",
     "IvfPqIndex",
     "IvfRabitqIndex",
@@ -32,6 +33,7 @@ __all__ = [
     "cagra_build",
     "cagra_optimize",
     "graph_search",
+    "hamming_knn",
     "kmeans_fit",
     "kmeans_predict",
     "nn_descent",
@@ -39,7 +41,7 @@ __all__ = [
     "vamana_build",
     "vamana_prune",
 ]
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 
 
 def __getattr__(name):
@@ -106,6 +108,11 @@ def brute_force_knn(base, queries, k, metric=Metric.l2, **kwargs):
     return _core.brute_force_knn(
         _array(base), _array(queries), k, _metric(metric), **kwargs
     )
+
+
+@functools.wraps(_core.hamming_knn)
+def hamming_knn(rows, queries, k, **kwargs):
+    return _core.hamming_knn(_array(rows), _array(queries), k, **kwargs)
 
 
 @functools.wraps(_core.kmeans_fit)
@@ -225,6 +232,7 @@ def all_neighbors(rows, k, metric=Metric.l2, **kwargs):
 
 for _f in (
     brute_force_knn,
+    hamming_knn,
     kmeans_fit,
     kmeans_predict,
     nn_descent,
@@ -236,11 +244,19 @@ for _f in (
     _f.__module__ = __name__
 
 from mlxvs._index import CagraIndex
-from mlxvs._ivf import IvfFlatIndex, IvfPqIndex, IvfRabitqIndex, IvfSqIndex, refine
+from mlxvs._ivf import (
+    IvfBinaryIndex,
+    IvfFlatIndex,
+    IvfPqIndex,
+    IvfRabitqIndex,
+    IvfSqIndex,
+    refine,
+)
 
 CagraIndex.__module__ = __name__
 IvfFlatIndex.__module__ = __name__
 IvfPqIndex.__module__ = __name__
 IvfSqIndex.__module__ = __name__
 IvfRabitqIndex.__module__ = __name__
+IvfBinaryIndex.__module__ = __name__
 refine.__module__ = __name__

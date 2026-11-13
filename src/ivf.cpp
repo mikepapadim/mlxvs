@@ -88,6 +88,15 @@ const mx::fast::CustomKernelFunction& rabitq_scan_kernel() {
   return kernel;
 }
 
+const mx::fast::CustomKernelFunction& binary_scan_kernel() {
+  static const mx::fast::CustomKernelFunction kernel = mx::fast::metal_kernel(
+      "mlxvs_ivf_binary_scan",
+      {"codes", "queries", "items", "pairs", "offsets", "slots", "params"},
+      {"scores", "rows"},
+      kernels::IVF_BINARY_SCAN_SOURCE);
+  return kernel;
+}
+
 // candidate buffers of one block of queries stay near this many bytes
 constexpr long long IVF_BUFFER_BYTES = 256LL << 20;
 
@@ -1105,6 +1114,292 @@ Neighbors ivf_rabitq_search(
     parts.push_back(r);
   }
   return concat(parts);
+}
+
+namespace {
+
+// Bit-packed rows uint8 [n, bytes] as uint32 words [n, ceil(bytes / 4)], the
+// bytes in order (little endian), zero padded.
+mx::array pack_words(const mx::array& rows, const char* op) {
+  if (rows.ndim() != 2 || rows.dtype() != mx::uint8) {
+    throw std::invalid_argument(
+        std::string("[") + op + "] rows must be bit-packed uint8 [n, bytes].");
+  }
+  int n = rows.shape(0);
+  int bytes = rows.shape(1);
+  int words = (bytes + 3) / 4;
+  auto padded = bytes == words * 4
+      ? rows
+      : mx::pad(rows, {{0, 0}, {0, words * 4 - bytes}});
+  return mx::contiguous(mx::view(mx::contiguous(padded), mx::uint32));
+}
+
+// Words [n, W] as +1 / -1 float16 bits [n, 32 W]: bit j % 32 of word j / 32.
+mx::array signs(const mx::array& words) {
+  int n = words.shape(0);
+  int w = words.shape(1);
+  auto bits = mx::bitwise_and(
+      mx::right_shift(mx::expand_dims(words, -1), mx::arange(32, mx::uint32)),
+      mx::array(1u));
+  return mx::reshape(
+      mx::subtract(
+          mx::multiply(
+              mx::astype(bits, mx::float16), mx::array(2.0f, mx::float16)),
+          mx::array(1.0f, mx::float16)),
+      {n, w * 32});
+}
+
+// Bits of +1 / -1 rows packed back into words (positive: 1).
+mx::array pack_signs(const mx::array& x) {
+  int n = x.shape(0);
+  int w = x.shape(1) / 32;
+  auto bits = mx::astype(mx::greater(x, mx::array(0.0f)), mx::uint32);
+  auto weights = mx::left_shift(mx::array(1u), mx::arange(32, mx::uint32));
+  return mx::astype(
+      mx::sum(mx::multiply(mx::reshape(bits, {n, w, 32}), weights), 2),
+      mx::uint32);
+}
+
+// The nearest center of every row by Hamming distance (the largest inner
+// product of +1 / -1 bits), in blocks.
+mx::array nearest_binary(const mx::array& words, const mx::array& centers) {
+  int n = words.shape(0);
+  auto cs = signs(centers);
+  constexpr int BLOCK = 1 << 16;
+  std::vector<mx::array> parts;
+  for (int i = 0; i < std::max(n, 1); i += BLOCK) {
+    int j = std::min(n, i + BLOCK);
+    auto x = signs(mx::slice(words, {i, 0}, {j, words.shape(1)}));
+    parts.push_back(
+        mx::astype(mx::argmax(mx::matmul(x, mx::transpose(cs)), 1), mx::int32));
+    mx::eval(parts.back());
+    if (n == 0) {
+      break;
+    }
+  }
+  return parts.size() == 1 ? parts[0] : mx::concatenate(parts, 0);
+}
+
+Neighbors binary_scan(
+    const IvfBinaryIndex& index,
+    const mx::array& qwords,
+    int k,
+    int probes_n,
+    bool every_list = false) {
+  int nq = qwords.shape(0);
+  int w = qwords.shape(1);
+  int lists = index.centers.shape(0);
+  // the n_probes nearest centers by Hamming distance, or every list
+  auto probes = every_list
+      ? mx::broadcast_to(mx::arange(lists, mx::int32), {nq, lists})
+      : brute_force_knn(
+            signs(index.centers), signs(qwords), probes_n, Metric::InnerProduct)
+            .ids;
+  auto sizes = mx::subtract(
+      mx::slice(index.offsets, {1}, {lists + 1}),
+      mx::slice(index.offsets, {0}, {lists}));
+  auto psizes = mx::where(
+      probes >= mx::array(0),
+      mx::take(sizes, mx::maximum(probes, mx::array(0))),
+      mx::array(0));
+  auto slots = mx::cumsum(psizes, 1, false, /*inclusive=*/false);
+  int width = std::max(1, mx::max(mx::sum(psizes, 1)).item<int>());
+  int qt = std::clamp(2048 / w, 1, 32);
+  int block = (int)std::clamp<long long>(
+      IVF_BUFFER_BYTES / (8LL * width), 1, std::max(1, nq));
+  std::vector<Neighbors> parts;
+  for (int q0 = 0; q0 < nq; q0 += block) {
+    int q1 = std::min(nq, q0 + block);
+    int nb = q1 - q0;
+    auto bprobes = mx::slice(probes, {q0, 0}, {q1, probes_n});
+    auto bslots = mx::slice(slots, {q0, 0}, {q1, probes_n});
+    auto g = group_pairs(bprobes, lists, qt);
+    auto params = mx::array({probes_n, width}, {2}, mx::int32);
+    auto out = binary_scan_kernel()(
+        {index.codes,
+         mx::slice(qwords, {q0, 0}, {q1, w}),
+         g.items,
+         g.pairs,
+         index.offsets,
+         mx::flatten(bslots),
+         params},
+        {{nb, width}, {nb, width}},
+        {mx::float32, mx::int32},
+        {g.n_items * kernels::IVF_THREADS, 1, 1},
+        {kernels::IVF_THREADS, 1, 1},
+        {{"QT", qt}, {"W", w}},
+        -INFINITY,
+        false,
+        {});
+    // finish's L2 convention: scores are minus the distances
+    auto r = finish(out[0], out[1], index.indices, k, true);
+    if (nq > block) {
+      mx::eval(r.ids, r.distances);
+    }
+    parts.push_back(r);
+  }
+  return concat(parts);
+}
+
+} // namespace
+
+IvfBinaryIndex ivf_binary_build(
+    const mx::array& rows_in,
+    const IvfBinaryOptions& options,
+    mx::StreamOrDevice s) {
+  const char* op = "mlxvs::ivf_binary_build";
+  mx::StreamContext context(detail::gpu_stream(s, op));
+  auto words = pack_words(rows_in, op);
+  int n = words.shape(0);
+  if (options.n_lists < 1 || options.n_lists > n) {
+    throw std::invalid_argument(
+        "[mlxvs::ivf_binary_build] n_lists must be in [1, number of rows].");
+  }
+  // k-means of the bits as +1 / -1 on a sample (every ratio-th row, as cuVS's)
+  int ratio = std::max<int>(
+      1,
+      (int)(n /
+            std::max<double>(
+                options.kmeans_trainset_fraction * n, options.n_lists)));
+  auto train = signs(mx::slice(words, {0, 0}, {n, words.shape(1)}, {ratio, 1}));
+  KMeansOptions km;
+  km.max_iter = options.kmeans_n_iters;
+  km.seed = options.seed;
+  km.sample_rows = train.shape(0);
+  auto centers = pack_signs(
+      kmeans_fit(mx::astype(train, mx::float32), options.n_lists, km));
+  mx::eval(centers);
+  auto labels = nearest_binary(words, centers);
+  IvfBinaryIndex index{
+      centers, mx::array(0), mx::array(0), mx::array(0), rows_in.shape(1) * 8};
+  group(
+      words,
+      mx::arange(n, mx::int32),
+      labels,
+      options.n_lists,
+      index.codes,
+      index.indices,
+      index.offsets);
+  return index;
+}
+
+IvfBinaryIndex ivf_binary_extend(
+    const IvfBinaryIndex& index,
+    const mx::array& new_rows,
+    const std::optional<mx::array>& new_ids,
+    mx::StreamOrDevice s) {
+  const char* op = "mlxvs::ivf_binary_extend";
+  mx::StreamContext context(detail::gpu_stream(s, op));
+  auto words = pack_words(new_rows, op);
+  int n = index.codes.shape(0);
+  int m = words.shape(0);
+  if (words.shape(1) != index.codes.shape(1)) {
+    throw std::invalid_argument(
+        "[mlxvs::ivf_binary_extend] new_rows must have the index's bytes.");
+  }
+  if (new_ids && (new_ids->ndim() != 1 || new_ids->shape(0) != m)) {
+    throw std::invalid_argument(
+        "[mlxvs::ivf_binary_extend] new_ids must hold one id per new row.");
+  }
+  int lists = index.centers.shape(0);
+  auto ids = next_ids(index.indices, m, new_ids);
+  auto labels = nearest_binary(words, index.centers);
+  IvfBinaryIndex out = index;
+  group(
+      mx::concatenate({index.codes, words}, 0),
+      mx::concatenate({index.indices, ids}, 0),
+      mx::concatenate({labels_from_offsets(index.offsets, n), labels}, 0),
+      lists,
+      out.codes,
+      out.indices,
+      out.offsets);
+  return out;
+}
+
+Neighbors ivf_binary_search(
+    const IvfBinaryIndex& index,
+    const mx::array& queries,
+    int k,
+    const IvfSearchOptions& options,
+    mx::StreamOrDevice s) {
+  const char* op = "mlxvs::ivf_binary_search";
+  mx::StreamContext context(detail::gpu_stream(s, op));
+  auto qwords = pack_words(queries, op);
+  if (qwords.shape(1) != index.codes.shape(1)) {
+    throw std::invalid_argument(
+        "[mlxvs::ivf_binary_search] queries must have the index's bytes.");
+  }
+  if (k < 1 || k > kernels::TOPK_MAX) {
+    throw std::invalid_argument(
+        "[mlxvs::ivf_binary_search] k must be in [1, 256].");
+  }
+  if (qwords.shape(0) == 0) {
+    return {mx::zeros({0, k}, mx::int32), mx::zeros({0, k}, mx::float32)};
+  }
+  int probes_n = std::clamp(options.n_probes, 1, (int)index.centers.shape(0));
+  return binary_scan(index, qwords, k, probes_n);
+}
+
+Neighbors hamming_knn(
+    const mx::array& rows,
+    const mx::array& queries,
+    int k,
+    mx::StreamOrDevice s) {
+  const char* op = "mlxvs::hamming_knn";
+  mx::StreamContext context(detail::gpu_stream(s, op));
+  auto words = pack_words(rows, op);
+  auto qwords = pack_words(queries, op);
+  int n = words.shape(0);
+  if (qwords.shape(1) != words.shape(1)) {
+    throw std::invalid_argument(
+        "[mlxvs::hamming_knn] queries must have the rows' bytes.");
+  }
+  if (k < 1 || k > kernels::TOPK_MAX) {
+    throw std::invalid_argument("[mlxvs::hamming_knn] k must be in [1, 256].");
+  }
+  if (qwords.shape(0) == 0 || n == 0) {
+    int nq = qwords.shape(0);
+    return {mx::full({nq, k}, -1, mx::int32), mx::full({nq, k}, INFINITY)};
+  }
+  // tiles of rows, each cut into lists of 2048 rows that every query scans:
+  // the scan is exact and parallel over lists; the tiles' best k are merged
+  constexpr int LIST = 2048;
+  constexpr int TILE = 1 << 16;
+  int w = words.shape(1);
+  std::vector<mx::array> ids, dist;
+  for (int t0 = 0; t0 < n; t0 += TILE) {
+    int t1 = std::min(n, t0 + TILE);
+    int rows_t = t1 - t0;
+    int lists = (rows_t + LIST - 1) / LIST;
+    auto offsets = mx::minimum(
+        mx::multiply(mx::arange(lists + 1, mx::int32), mx::array(LIST)),
+        mx::array(rows_t));
+    IvfBinaryIndex tile{
+        mx::zeros({lists, w}, mx::uint32),
+        mx::slice(words, {t0, 0}, {t1, w}),
+        mx::arange(t0, t1, mx::int32),
+        offsets,
+        rows.shape(1) * 8};
+    auto r = binary_scan(tile, qwords, std::min(k, rows_t), lists, true);
+    mx::eval(r.ids, r.distances);
+    ids.push_back(r.ids);
+    dist.push_back(r.distances);
+  }
+  if (ids.size() == 1 && ids[0].shape(1) == k) {
+    return {ids[0], dist[0]};
+  }
+  auto all_ids = mx::concatenate(ids, 1);
+  auto all_dist = mx::concatenate(dist, 1);
+  int kk = std::min(k, (int)all_dist.shape(1));
+  auto order =
+      mx::slice(mx::argsort(all_dist, 1), {0, 0}, {(int)all_dist.shape(0), kk});
+  auto out_ids = mx::take_along_axis(all_ids, order, 1);
+  auto out_dist = mx::take_along_axis(all_dist, order, 1);
+  if (kk < k) {
+    out_ids = mx::pad(out_ids, {{0, 0}, {0, k - kk}}, mx::array(-1));
+    out_dist = mx::pad(out_dist, {{0, 0}, {0, k - kk}}, mx::array(INFINITY));
+  }
+  return {out_ids, out_dist};
 }
 
 namespace {

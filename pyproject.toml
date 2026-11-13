@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlxvs"
-version = "0.14.0"
+version = "0.15.0"
 description = "GPU k-NN search and k-NN graph construction on Apple silicon, built on MLX"
 readme = "README.md"
 license = "Apache-2.0"

@@ -5,6 +5,7 @@
 // extend.
 #include <algorithm>
 #include <cstdio>
+#include <random>
 #include <unordered_set>
 #include <vector>
 
@@ -248,7 +249,69 @@ static void rabitq_case(Metric metric, int bits, mlxvs::RabitqMode mode) {
   check(ok, "ivf_rabitq");
 }
 
+static void binary_case() {
+  int n = 20000, bytes = 32, nq = 300, k = 10;
+  // clustered bits: rows of 40 centers with 10% of their bits flipped
+  std::mt19937 rng(7);
+  std::vector<uint8_t> centers(40 * bytes), rows((size_t)(n + nq) * bytes);
+  for (auto& c : centers)
+    c = (uint8_t)(rng() & 0xff);
+  for (int i = 0; i < n + nq; ++i) {
+    int c = rng() % 40;
+    for (int j = 0; j < bytes; ++j) {
+      uint8_t flip = 0;
+      for (int b = 0; b < 8; ++b)
+        flip |= (rng() % 10 == 0) << b;
+      rows[(size_t)i * bytes + j] = centers[c * bytes + j] ^ flip;
+    }
+  }
+  mx::array x(rows.data(), {n, bytes}, mx::uint8);
+  mx::array q(rows.data() + (size_t)n * bytes, {nq, bytes}, mx::uint8);
+  auto exact = mlxvs::hamming_knn(x, q, k);
+  mx::eval(exact.ids, exact.distances);
+  // the exact distances against a CPU count
+  bool exact_ok = true;
+  for (int i = 0; i < nq && exact_ok; ++i) {
+    std::vector<int> d(n);
+    for (int r = 0; r < n; ++r) {
+      int h = 0;
+      for (int j = 0; j < bytes; ++j)
+        h += __builtin_popcount(
+            rows[(size_t)r * bytes + j] ^ rows[(size_t)(n + i) * bytes + j]);
+      d[r] = h;
+    }
+    std::nth_element(d.begin(), d.begin() + k - 1, d.end());
+    exact_ok = exact.distances.data<float>()[i * k + k - 1] == (float)d[k - 1];
+  }
+  mlxvs::IvfBinaryOptions o;
+  o.n_lists = 40;
+  auto index = mlxvs::ivf_binary_build(x, o);
+  mlxvs::IvfSearchOptions so;
+  so.n_probes = 40;
+  auto all = mlxvs::ivf_binary_search(index, q, k, so);
+  so.n_probes = 4;
+  auto few = mlxvs::ivf_binary_search(index, q, k, so);
+  mx::eval(all.distances, few.distances);
+  int same_all = 0, same_few = 0;
+  for (int i = 0; i < nq; ++i) {
+    float e = exact.distances.data<float>()[i * k + k - 1];
+    same_all += all.distances.data<float>()[i * k + k - 1] == e;
+    same_few += few.distances.data<float>()[i * k + k - 1] <= e;
+  }
+  bool ok = exact_ok && same_all == nq && same_few >= nq * 9 / 10;
+  std::printf(
+      "%-6s hamming_knn exact: %s; ivf_binary all lists %d/%d exact, 4 of 40 lists %d/%d\n",
+      ok ? "PASS" : "FAIL",
+      exact_ok ? "matches the CPU" : "WRONG",
+      same_all,
+      nq,
+      same_few,
+      nq);
+  check(ok, "ivf_binary");
+}
+
 int main() {
+  binary_case();
   sq_case(Metric::L2);
   sq_case(Metric::InnerProduct);
   sq_case(Metric::Cosine);

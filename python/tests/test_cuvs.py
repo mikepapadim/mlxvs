@@ -14,6 +14,7 @@ from mlxvs.cuvs.neighbors import (
     brute_force,
     cagra,
     filters,
+    ivf_binary,
     ivf_flat,
     ivf_pq,
     ivf_rabitq,
@@ -763,3 +764,60 @@ def test_ivf_rabitq_dims(d):
     idx = mlxvs.IvfRabitqIndex.build(x, n_lists=8, bits_per_dim=6, fast_quantize=False)
     ids, _ = idx.search(x[:40] + 0.01, 5, n_probes=8, mode="lut32")
     assert (np.asarray(ids)[:, 0] == np.arange(40)).mean() > 0.9
+
+
+# --- binary: Hamming brute force and IVF-binary ------------------------------
+
+
+def _hamming(a, b):
+    return np.unpackbits(a[:, None] ^ b[None], axis=2).sum(2)
+
+
+@pytest.mark.parametrize("bytes_", [3, 16, 128])
+def test_bitwise_hamming_brute_force(bytes_, tmp_path):
+    rng = np.random.default_rng(11)
+    data = rng.integers(0, 256, (700, bytes_), dtype=np.uint8)
+    queries = rng.integers(0, 256, (40, bytes_), dtype=np.uint8)
+    index = brute_force.build(data, metric="bitwise_hamming")
+    path = str(tmp_path / "h.bin")
+    brute_force.save(path, index)
+    d, i = brute_force.search(brute_force.load(path), queries, 7)
+    d, i = d.copy_to_host(), i.copy_to_host()
+    want = np.sort(_hamming(queries, data), axis=1)[:, :7]
+    np.testing.assert_array_equal(d, want)
+    np.testing.assert_array_equal(
+        np.take_along_axis(_hamming(queries, data), i, 1), want
+    )
+    keep = rng.random(700) < 0.4
+    _, i2 = brute_force.search(index, queries, 5, prefilter=filters.from_bitset(keep))
+    assert keep[i2.copy_to_host()].all()
+
+
+def test_ivf_binary(tmp_path):
+    rng = np.random.default_rng(12)
+    centers = rng.standard_normal((30, 256)).astype(np.float32)
+    x = centers[rng.integers(0, 30, 5000)] + 0.5 * rng.standard_normal(
+        (5000, 256)
+    ).astype(np.float32)
+    codes = np.packbits(x > 0, axis=1)
+    queries = codes[:100]
+    index = ivf_binary.build(ivf_binary.IndexParams(n_lists=30), codes)
+    assert index.dim == 32 and len(index) == 5000
+    d, i = ivf_binary.search(ivf_binary.SearchParams(n_probes=30), index, queries, 10)
+    d, i = d.copy_to_host(), i.copy_to_host()
+    exact = np.sort(_hamming(queries, codes), axis=1)[:, :10]
+    np.testing.assert_array_equal(d, exact)
+    d5, _ = ivf_binary.search(ivf_binary.SearchParams(n_probes=5), index, queries, 10)
+    assert np.mean(d5.copy_to_host() == exact) > 0.9
+    path = str(tmp_path / "ib.bin")
+    ivf_binary.save(path, index)
+    _, i2 = ivf_binary.search(
+        ivf_binary.SearchParams(n_probes=30), ivf_binary.load(path), queries, 10
+    )
+    np.testing.assert_array_equal(np.sort(i, 1), np.sort(i2.copy_to_host(), 1))
+    empty = ivf_binary.build(
+        ivf_binary.IndexParams(n_lists=30, add_data_on_build=False), codes
+    )
+    ivf_binary.extend(empty, codes, np.arange(5000))
+    d3, _ = ivf_binary.search(ivf_binary.SearchParams(n_probes=30), empty, queries, 10)
+    np.testing.assert_array_equal(d3.copy_to_host(), exact)
