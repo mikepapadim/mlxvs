@@ -237,6 +237,32 @@ So: build on the GPU (6 to 7x faster), search on the GPU for batches, and for on
 recall; at lower recall and low load, `save_hnswlib` and serve from the CPU. `bench/plot_bench.py` draws the chart
 from `bench_search.py`'s output.
 
+## Swift (macOS and iOS)
+
+The package is a Swift package too: `MLXVS` runs the same Metal kernels through
+[mlx-swift](https://github.com/ml-explore/mlx-swift), on the GPU of Macs and iPhones. Build a search index with
+Python, ship the `.safetensors` file with an app, and search it on the device:
+
+```python
+index = mlxvs.CagraIndex.build(vectors, graph_degree=32, metric="cosine")
+index.save("docs.safetensors")
+```
+
+```swift
+// Package.swift: .package(url: "https://github.com/mikepapadim/mlxvs", from: "0.16.0")
+import MLX
+import MLXVS
+
+let index = try CagraIndex.load(url: Bundle.main.url(forResource: "docs", withExtension: "safetensors")!)
+let result = try index.search(queries, k: 10)     // result.ids [nq, 10], result.distances [nq, 10]
+let exact = try bruteForceKNN(base: vectors, queries: queries, k: 10, metric: .cosine)
+```
+
+`CagraIndex.load` / `search` (single- and multi-CTA, filters), `graphSearch` and `bruteForceKNN`: the same results as
+the Python package (SIFT1M from the same index file: 219,000 queries/s from Swift, 200,000 from Python, `itopk_size`
+32, M3 Pro). Building graphs, IVF indexes and compressed (VPQ) indexes are Python and C++ only for now. Tests:
+`swift test` (Xcode 26+ with its Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`).
+
 ## Coming from cuVS
 
 ### Drop-in: `mlxvs.cuvs`

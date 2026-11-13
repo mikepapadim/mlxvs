@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0 (2026-11-13)
+
+- A Swift package (`Package.swift`, product `MLXVS`) for macOS and iOS, on mlx-swift: `CagraIndex.load` reads indexes
+  saved by the Python package, `search` / `graphSearch` run the single- and multi-CTA graph search (filters
+  included) and `bruteForceKNN` the tiled exact search with the radix-select top-k. The Metal sources are the C++
+  library's, generated into `Kernels.swift` by `scripts/gen_swift_kernels.py` (CI checks they match). Same results as
+  Python; SIFT1M from the same index file: 219,000 queries/s from Swift, 200,000 from Python (`itopk_size` 32).
+- CI runs the Swift tests with `xcodebuild`.
+
 ## 0.15.2 (2026-11-13)
 
 - `hamming_knn`, `IvfBinaryIndex` and `IvfRabitqIndex` work on inputs of a few rows: MLX binds small inputs in the

@@ -58,3 +58,15 @@ jobs:
           python -m pip install ruff
           ruff check python bench examples
           ruff format --check python bench examples
+
+  swift:
+    name: Swift package (macOS 15, Apple silicon)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kernel sources match the C++ headers
+        run: python3 scripts/gen_swift_kernels.py --check
+      - name: Test
+        # xcodebuild compiles mlx-swift's Metal shaders (swift build does on
+        # Xcode 26+ with the Metal toolchain)
+        run: xcodebuild test -scheme mlxvs -destination 'platform=macOS' -skipPackagePluginValidation

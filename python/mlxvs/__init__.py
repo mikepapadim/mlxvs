@@ -41,7 +41,7 @@ __all__ = [
     "vamana_build",
     "vamana_prune",
 ]
-__version__ = "0.15.2"
+__version__ = "0.16.0"
 
 
 def __getattr__(name):
