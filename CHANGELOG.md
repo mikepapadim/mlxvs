@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.0 (2026-11-13)
+
+- `mlxvs.cuvs`: cuVS's Python API (26.10) on mlxvs, for code written against cuVS to run on a Mac by changing
+  its imports. `neighbors.{cagra, brute_force, ivf_flat, ivf_pq, refine, nn_descent, all_neighbors, filters}`,
+  `distance.pairwise_distance`, `cluster.kmeans` and `common.device_ndarray`, with cuVS's parameter classes,
+  defaults, result order (`distances, neighbors`), dtypes and distances (squared for `"sqeuclidean"`, cosine
+  distances, inner products).
+- cuVS's index files: `cagra.save` writes cuVS's CAGRA format (version 6 by default; 5 and 4 for cuVS 26.02 to
+  26.08 and 25.x) and `cagra.load` reads all three, so an index built with cuVS on an NVIDIA GPU is searched on a
+  Mac and back; `brute_force.save` / `load` use cuVS's brute-force format.
+- `pairwise_distance` covers cuVS's metrics (euclidean to KL divergence) on the GPU; `brute_force.search` takes
+  all of them and bitset or bitmap prefilters; `all_neighbors.build` returns HDBSCAN's mutual-reachability graph
+  with `core_distances`; `kmeans.fit` seeds with k-means++ and takes sample weights and `n_init`.
+- `python/tests/test_cuvs.py` checks the layer as cuVS's own Python tests do (against SciPy).
+
 ## 0.12.0 (2026-11-12)
 
 - CAGRA-Q: `CagraIndex.compress()` (C++ `vpq_build`, `graph_search_vpq`) replaces the stored rows by cuVS's VPQ

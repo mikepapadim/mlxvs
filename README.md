@@ -49,7 +49,8 @@ deduplication, for exact k-NN ground truth, or as the build step of a graph inde
 | `CagraIndex.save_jvector(path)` | The index in JVector's on-disk format (`OnDiskGraphIndex`, JVector 4): build on the GPU, search from Java; see [examples/jvector](examples/jvector) | |
 | `NearestNeighbors(n_neighbors).fit(X).kneighbors(Q)` | scikit-learn's interface over the above, NumPy in and out | |
 
-Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. A C API for other languages. Next: see
+Metrics: `"l2"` (squared), `"cosine"`, `"inner_product"`. A C API for other languages. cuVS's own Python API, and its
+CAGRA index files: [`mlxvs.cuvs`](#drop-in-mlxvscuvs). Next: see
 [Roadmap](#roadmap).
 
 ## 1. Install
@@ -235,6 +236,41 @@ from `bench_search.py`'s output.
 
 ## Coming from cuVS
 
+### Drop-in: `mlxvs.cuvs`
+
+`mlxvs.cuvs` is cuVS's Python API (26.10): the same modules, classes, functions, parameters, defaults and results,
+on mlxvs's kernels. Code written for cuVS runs on a Mac by changing its imports:
+
+```python
+from mlxvs.cuvs.neighbors import cagra        # from cuvs.neighbors import cagra
+from mlxvs.cuvs.common import device_ndarray   # from pylibraft.common import device_ndarray
+
+index = cagra.build(cagra.IndexParams(metric="sqeuclidean", graph_degree=64), device_ndarray(dataset))
+distances, neighbors = cagra.search(cagra.SearchParams(itopk_size=64), index, device_ndarray(queries), k=10)
+neighbors.copy_to_host()                       # uint32 [n_queries, 10], as cuVS
+
+cagra.save("index.bin", index)                 # cuVS's own CAGRA file format
+```
+
+| Module | Covered |
+|---|---|
+| `neighbors.cagra` | `IndexParams`, `SearchParams`, `ExtendParams`, `AceParams`, `Index`, `build`, `search` (filters), `extend`, `from_graph`, `update_dataset`, `save`, `load`; float32, float16, int8, uint8 |
+| `neighbors.brute_force` | `build`, `search` (bitset and bitmap prefilters), `save`, `load`; every `pairwise_distance` metric |
+| `neighbors.ivf_flat`, `neighbors.ivf_pq` | `IndexParams`, `SearchParams`, `build`, `search` (filters), `extend`, `save`, `load` |
+| `neighbors.refine`, `neighbors.nn_descent`, `neighbors.all_neighbors` | as cuVS, mutual-reachability `core_distances` included |
+| `neighbors.filters` | `no_filter`, `from_bitset`, `from_bitmap` |
+| `distance.pairwise_distance` | euclidean, sqeuclidean, l1/cityblock, chebyshev, canberra, minkowski/lp, correlation, cosine, hamming, jensenshannon, russellrao, hellinger, kl_divergence, inner_product |
+| `cluster.kmeans` | `KMeansParams`, `fit` (k-means++, random or given centers; sample weights; `n_init`), `predict`, `cluster_cost` |
+| `common` | `device_ndarray` (`copy_to_host`, `empty`), `Resources`, `set_output_as("raft" / "numpy" / "mlx" / "torch")` |
+
+Index files: CAGRA's are cuVS's format, versions 6 (cuVS 26.10 on, the default), 5 (26.02 to 26.08) and 4 (25.x),
+written by `cagra.save(..., version=)` and all read by `cagra.load`; brute force's is cuVS's too. So an index
+built on an NVIDIA GPU is searched on a Mac, and back. IVF indexes are saved in mlxvs's format for now. Results
+follow cuVS: `"sqeuclidean"` squared, `"euclidean"` not, inner products, cosine *distances*; CAGRA ids `uint32`,
+the others `int64`. The rest of cuVS is on the [roadmap](#roadmap).
+
+### mlxvs's own API
+
 | mlxvs | cuVS | Note |
 |---|---|---|
 | `nn_descent(rows, k, ...)` | `nn_descent::index_params::graph_degree` | cuVS default 64 |
@@ -259,7 +295,18 @@ from `bench_search.py`'s output.
 
 ## Roadmap
 
-1. IVF, extend and compression in the C API.
+Every cuVS feature on Apple silicon, one release each:
+
+1. Quantizers (scalar, binary, product, BBQ), PCA, and the IVF-SQ, IVF-RaBitQ and IVF-binary indexes.
+2. Ball cover, epsilon neighborhood (radius search), `knn_merge_parts`, tiered and composite indexes, dynamic
+   batching, CAGRA merge.
+3. Clustering (balanced k-means, agglomerative, spectral, GMM), spectral embedding, silhouette and trustworthiness
+   scores, kernels and KDE.
+4. ScaNN, the HNSW module, Vamana/DiskANN files, cuVS's IVF file formats, bloom and roaring filters, sparse
+   datasets.
+5. IVF, extend and compression in the C API.
+
+cuVS's multi-GPU (`mg`) modules have no counterpart: a Mac has one GPU.
 
 Tried and left out: Vamana graphs from search-path candidates, as DiskANN builds them (each row searched over the
 CAGRA graph, its path and result list pruned with JVector's rule). On SIFT1M at degree 32 they stay below CAGRA's

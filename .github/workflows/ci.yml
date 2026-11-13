@@ -42,7 +42,7 @@ jobs:
           python -m pip install -v .
       - name: Test
         run: |
-          python -m pip install pytest hnswlib
+          python -m pip install pytest hnswlib scipy
           python -m pytest -q python/tests
       - name: README example
         # the Python example of README.md's "Use" section, as written
